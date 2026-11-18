@@ -32,6 +32,12 @@
   --west: #d2762b;
   --east: #1f8f82;
   --grid: rgba(22, 34, 45, 0.08);
+  --ship-hull: #2a2e35;
+  --ship-edge: #8c939c;
+  --ship-boot: #a3322b;
+  --ship-house: #ebe9e1;
+  --ship-funnel: #b5352c;
+  --ship-fitting: #5a6068;
   --font-sans: 'IBM Plex Sans', system-ui, -apple-system, 'Segoe UI', sans-serif;
   --font-mono: 'IBM Plex Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
 }
@@ -41,6 +47,7 @@
     --line: #2a3a49; --accent: #5cb2e3; --accent-soft: #173347; --water-top: #3f86b7; --water-deep: #0a2a44;
     --water-fill: rgba(49, 128, 184, 0.5); --bed: #7c6246; --bed-dark: #3c2f22; --sky: #101a23; --foam: #ffffff;
     --breaking: #e3714c; --wind: #e8b04a; --west: #e68a3c; --east: #3fb3a3; --grid: rgba(228, 235, 242, 0.08);
+    --ship-hull: #262a30; --ship-edge: #9aa2ab; --ship-boot: #b1392f; --ship-house: #e4e2da; --ship-funnel: #c23b31; --ship-fitting: #6a7079;
     color-scheme: dark;
   }
 }
@@ -49,6 +56,7 @@
   --line: #2a3a49; --accent: #5cb2e3; --accent-soft: #173347; --water-top: #3f86b7; --water-deep: #0a2a44;
   --water-fill: rgba(49, 128, 184, 0.5); --bed: #7c6246; --bed-dark: #3c2f22; --sky: #101a23; --foam: #ffffff;
   --breaking: #e3714c; --wind: #e8b04a; --west: #e68a3c; --east: #3fb3a3; --grid: rgba(228, 235, 242, 0.08);
+  --ship-hull: #262a30; --ship-edge: #9aa2ab; --ship-boot: #b1392f; --ship-house: #e4e2da; --ship-funnel: #c23b31; --ship-fitting: #6a7079;
   color-scheme: dark;
 }
 * { box-sizing: border-box; }
@@ -207,6 +215,8 @@ canvas { display: block; width: 100%; border-radius: 6px; background: var(--sky)
         </div>
         <div class="row"><label for="winWidth">Width</label><span class="val" id="winWidthVal">400 m</span></div>
         <input type="range" id="winWidth" min="0" max="100" step="1" value="40">
+        <div class="row"><label for="vessel">Vessel for scale</label></div>
+        <div class="row"><select id="vessel" aria-label="Vessel drawn in the window"></select></div>
         <div class="row"><label for="exag">Vertical exaggeration</label>
           <select id="exag">
             <option value="1">1× (true)</option>
@@ -290,7 +300,10 @@ canvas { display: block; width: 100%; border-radius: 6px; background: var(--sky)
           <h3>6. Orbits</h3>
           <p>Water particles move in closed loops: circles that shrink exponentially with depth in deep water, ellipses that flatten toward the bed in shallow water, where the horizontal motion reaches the bottom. Semi-axes A = a cosh k(z+d)/sinh kd and B = a sinh k(z+d)/sinh kd. This is why shallow Lake Erie stirs up its own mud in a storm.</p>
 
-          <h3>7. Set-up and seiche: the lake as a whole</h3>
+          <h3>7. The vessel</h3>
+          <p>The ship is drawn at true length, draft and freeboard (loaded condition) and floats hydrostatically: it sits at the mean level and mean slope of the water along its hull, found by a least-squares line through the surface under it. No inertia, added mass or damping, so it is exact for a hull much shorter or much longer than the waves and a fair sketch in between. A 150 m tanker on 60 m waves spans more than two crests and rides nearly level; the dangerous sea is one whose wavelength approaches the hull length, when the ship pitches hardest and is alternately hogged (supported amidships) and sagged (supported at the ends). Where the water is shallower than the draft the keel is drawn on the bed. The window scale applies to the ship too, so with vertical exaggeration the hull looks deeper than it is.</p>
+
+          <h3>8. Set-up and seiche: the lake as a whole</h3>
           <p>The wind stress τ = ρ<sub>air</sub> C<sub>D</sub> U<sub>10</sub>² (C<sub>D</sub> from Wu 1982) tilts the surface until the pressure gradient balances it, with slope dη/dx = τ / (ρ g h): three times steeper over the 8 m western basin of Erie than over the 24 m central basin, and almost flat over Superior. The model integrates the one-dimensional shallow-water equations on a staggered grid with quadratic bottom friction:</p>
           <div class="eq">∂η/∂t = −(1/b) ∂(b h u)/∂x&nbsp;&nbsp;&nbsp;&nbsp;∂u/∂t = −g ∂η/∂x + τ/(ρ h) − C<sub>f</sub> |u| u / h</div>
           <p>Change the wind and the tilted surface overshoots and rings as a seiche whose period the model produces on its own. The estimate shown is T<sub>1</sub> = 2 ∫ dx / √(g h), which reduces to Merian's 2L/√(gh) for a uniform basin; Erie's observed fundamental is about 14.3 h.</p>

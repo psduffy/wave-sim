@@ -8,6 +8,7 @@ a beach, or draw your own), set a wind, and watch:
 * each wave component shorten, slow down and shoal as it feels the bottom,
 * breaking where the water gets too shallow,
 * water particles tracing circles in deep water and flattened ellipses in shallow water,
+* a Great Lakes tanker or laker floating on the surface at true scale (or aground where the water is shallower than its draft),
 * the whole lake tilt under the wind (set-up) and slosh back as a seiche when the wind changes.
 
 No build step, no dependencies: plain HTML, CSS and JavaScript on a 2-D canvas.
@@ -41,6 +42,7 @@ No build step, no dependencies: plain HTML, CSS and JavaScript on a 2-D canvas.
 | File | Role |
 | --- | --- |
 | `src/physics.js` | Pure formulas with their sources: dispersion relation, group speed, shoaling, Stokes crest term, orbital motion, wind stress, SMB growth curves, duration limit, JONSWAP/TMA spectrum, breaking limits, equilibrium set-up, seiche period. |
+| `src/vessel.js` | Vessel classes (tanker, Seawaymax and 1000-foot lakers, classic pilothouse-forward laker, small boat), their side-view outlines, and the hydrostatic pose: a least-squares waterline through the surface under the hull. |
 | `src/bathymetry.js` | Lake profiles (depth and plan-view width along the long axis) and a shape-preserving PCHIP interpolator. |
 | `src/wavefield.js` | Marches a 64-component spectrum across the basin: fetch/depth-limited generation, shoaling, breaking with permanent energy loss, phase integration, and the fine-resolution surface for the zoom window. |
 | `src/slowmodel.js` | One-dimensional shallow-water model (staggered grid, forward–backward scheme, quadratic bottom friction, variable width) for wind set-up and seiches. |
@@ -73,7 +75,10 @@ wind slider).
 5. **Crest shape.** Second-order Stokes term per component, capped where the
    Ursell number invalidates Stokes theory.
 6. **Orbits.** Linear-theory particle displacements summed over components.
-7. **Set-up and seiche.** ∂η/∂t = −(1/b) ∂(b h u)/∂x and
+7. **Vessel.** True length, draft and freeboard; floats at the mean level and
+   slope of the water along its hull (hydrostatic, no inertia), so a hull much
+   longer than the waves rides level and one about a wavelength long pitches most.
+8. **Set-up and seiche.** ∂η/∂t = −(1/b) ∂(b h u)/∂x and
    ∂u/∂t = −g ∂η/∂x + τ/(ρh) − C_f |u| u / h, with τ = ρ_air C_D U10² (Wu 1982).
    The seiche period is a result of the model; the readout also shows the
    long-wave estimate T₁ = 2 ∫ dx / √(g h).

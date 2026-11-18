@@ -32,6 +32,12 @@
   --west: #d2762b;
   --east: #1f8f82;
   --grid: rgba(22, 34, 45, 0.08);
+  --ship-hull: #2a2e35;
+  --ship-edge: #8c939c;
+  --ship-boot: #a3322b;
+  --ship-house: #ebe9e1;
+  --ship-funnel: #b5352c;
+  --ship-fitting: #5a6068;
   --font-sans: 'IBM Plex Sans', system-ui, -apple-system, 'Segoe UI', sans-serif;
   --font-mono: 'IBM Plex Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
 }
@@ -41,6 +47,7 @@
     --line: #2a3a49; --accent: #5cb2e3; --accent-soft: #173347; --water-top: #3f86b7; --water-deep: #0a2a44;
     --water-fill: rgba(49, 128, 184, 0.5); --bed: #7c6246; --bed-dark: #3c2f22; --sky: #101a23; --foam: #ffffff;
     --breaking: #e3714c; --wind: #e8b04a; --west: #e68a3c; --east: #3fb3a3; --grid: rgba(228, 235, 242, 0.08);
+    --ship-hull: #262a30; --ship-edge: #9aa2ab; --ship-boot: #b1392f; --ship-house: #e4e2da; --ship-funnel: #c23b31; --ship-fitting: #6a7079;
     color-scheme: dark;
   }
 }
@@ -49,6 +56,7 @@
   --line: #2a3a49; --accent: #5cb2e3; --accent-soft: #173347; --water-top: #3f86b7; --water-deep: #0a2a44;
   --water-fill: rgba(49, 128, 184, 0.5); --bed: #7c6246; --bed-dark: #3c2f22; --sky: #101a23; --foam: #ffffff;
   --breaking: #e3714c; --wind: #e8b04a; --west: #e68a3c; --east: #3fb3a3; --grid: rgba(228, 235, 242, 0.08);
+  --ship-hull: #262a30; --ship-edge: #9aa2ab; --ship-boot: #b1392f; --ship-house: #e4e2da; --ship-funnel: #c23b31; --ship-fitting: #6a7079;
   color-scheme: dark;
 }
 * { box-sizing: border-box; }
@@ -207,6 +215,8 @@ canvas { display: block; width: 100%; border-radius: 6px; background: var(--sky)
         </div>
         <div class="row"><label for="winWidth">Width</label><span class="val" id="winWidthVal">400 m</span></div>
         <input type="range" id="winWidth" min="0" max="100" step="1" value="40">
+        <div class="row"><label for="vessel">Vessel for scale</label></div>
+        <div class="row"><select id="vessel" aria-label="Vessel drawn in the window"></select></div>
         <div class="row"><label for="exag">Vertical exaggeration</label>
           <select id="exag">
             <option value="1">1× (true)</option>
@@ -290,7 +300,10 @@ canvas { display: block; width: 100%; border-radius: 6px; background: var(--sky)
           <h3>6. Orbits</h3>
           <p>Water particles move in closed loops: circles that shrink exponentially with depth in deep water, ellipses that flatten toward the bed in shallow water, where the horizontal motion reaches the bottom. Semi-axes A = a cosh k(z+d)/sinh kd and B = a sinh k(z+d)/sinh kd. This is why shallow Lake Erie stirs up its own mud in a storm.</p>
 
-          <h3>7. Set-up and seiche: the lake as a whole</h3>
+          <h3>7. The vessel</h3>
+          <p>The ship is drawn at true length, draft and freeboard (loaded condition) and floats hydrostatically: it sits at the mean level and mean slope of the water along its hull, found by a least-squares line through the surface under it. No inertia, added mass or damping, so it is exact for a hull much shorter or much longer than the waves and a fair sketch in between. A 150 m tanker on 60 m waves spans more than two crests and rides nearly level; the dangerous sea is one whose wavelength approaches the hull length, when the ship pitches hardest and is alternately hogged (supported amidships) and sagged (supported at the ends). Where the water is shallower than the draft the keel is drawn on the bed. The window scale applies to the ship too, so with vertical exaggeration the hull looks deeper than it is.</p>
+
+          <h3>8. Set-up and seiche: the lake as a whole</h3>
           <p>The wind stress τ = ρ<sub>air</sub> C<sub>D</sub> U<sub>10</sub>² (C<sub>D</sub> from Wu 1982) tilts the surface until the pressure gradient balances it, with slope dη/dx = τ / (ρ g h): three times steeper over the 8 m western basin of Erie than over the 24 m central basin, and almost flat over Superior. The model integrates the one-dimensional shallow-water equations on a staggered grid with quadratic bottom friction:</p>
           <div class="eq">∂η/∂t = −(1/b) ∂(b h u)/∂x&nbsp;&nbsp;&nbsp;&nbsp;∂u/∂t = −g ∂η/∂x + τ/(ρ h) − C<sub>f</sub> |u| u / h</div>
           <p>Change the wind and the tilted surface overshoots and rings as a seiche whose period the model produces on its own. The estimate shown is T<sub>1</sub> = 2 ∫ dx / √(g h), which reduces to Merian's 2L/√(gh) for a uniform basin; Erie's observed fundamental is about 14.3 h.</p>
@@ -775,6 +788,155 @@ function withLength(profile, length) {
 }
 
 return { PRESETS, presetById, pchip, depthFunction, widthFunction, sampleDepths, cloneProfile, withLength };
+})();
+
+__m.vessel = (function () {
+// vessel.js — ships drawn on the surface for scale.
+//
+// Dimensions are loaded-condition figures typical of each class:
+//   tanker:     Great Lakes product tankers (Algoma Hansa / Algoterra size)
+//   seawaymax:  the largest hull that fits the St. Lawrence Seaway locks
+//   thousand:   the thirteen 1000-footers confined to the upper four lakes
+//   classic:    pilothouse-forward straight-decker of the Edmund Fitzgerald era
+//   boat:       an 8 m sport-fishing boat, for contrast
+//
+// The vessel is hydrostatic: it floats at the mean level and mean slope of
+// the water along its hull (a least-squares line through the surface under
+// it), with no inertia or added mass.  That is exact for a hull much shorter
+// or much longer than the waves and a fair sketch in between.
+
+const VESSELS = [
+  { id: 'none', name: 'none' },
+  { id: 'tanker', name: 'Great Lakes tanker, 150 m', LOA: 150, beam: 23.7, draft: 8.0, hullDepth: 12.0, layout: 'tanker' },
+  { id: 'seawaymax', name: 'Seawaymax laker, 225 m', LOA: 225.5, beam: 23.8, draft: 8.1, hullDepth: 14.3, layout: 'laker-aft' },
+  { id: 'thousand', name: '1000-foot laker, 309 m', LOA: 308.7, beam: 32.0, draft: 8.8, hullDepth: 17.0, layout: 'laker-aft' },
+  { id: 'classic', name: 'Classic laker, pilothouse forward, 222 m', LOA: 222.5, beam: 22.9, draft: 7.6, hullDepth: 11.9, layout: 'laker-forward' },
+  { id: 'boat', name: 'Fishing boat, 8 m', LOA: 8, beam: 2.6, draft: 0.7, hullDepth: 1.6, layout: 'boat' },
+];
+
+function vesselById(id) {
+  return VESSELS.find((v) => v.id === id) || VESSELS[0];
+}
+
+/**
+ * Least-squares line η = b + m·(x − xc) through the surface samples under the
+ * hull.  eta/x: fine-grid arrays; pc: centre index; halfLen: half the hull
+ * length in metres.  Returns { b, m, samples }.
+ */
+function fitWaterline(eta, x, pc, halfLen) {
+  const n = eta.length;
+  const dx = n > 1 ? x[1] - x[0] : 1;
+  const hp = Math.max(0, Math.round(halfLen / dx));
+  const p0 = Math.max(0, pc - hp);
+  const p1 = Math.min(n - 1, pc + hp);
+  let sw = 0, sx = 0, sy = 0, sxx = 0, sxy = 0;
+  const xc = x[pc];
+  for (let p = p0; p <= p1; p++) {
+    const u = x[p] - xc;
+    sw += 1; sx += u; sy += eta[p]; sxx += u * u; sxy += u * eta[p];
+  }
+  if (sw < 2) return { b: eta[pc], m: 0, samples: sw };
+  const den = sw * sxx - sx * sx;
+  const m = den > 1e-12 ? (sw * sxy - sx * sy) / den : 0;
+  const b = (sy - m * sx) / sw;
+  return { b, m, samples: sw };
+}
+
+/**
+ * Pose of a vessel centred on fine-grid index pc.
+ *   headingSign: +1 bow toward +x, −1 bow toward −x
+ * Returns { heave, pitch (rad), aground, waterUnderKeel }.
+ */
+function vesselPose(def, fine, eta, pc, headingSign) {
+  const fit = fitWaterline(eta, fine.x, pc, def.LOA / 2);
+  const stillDepth = fine.d[pc] - fine.eta0[pc];     // bed below still-water level
+  const waterUnderKeel = stillDepth + fit.b - def.draft;
+  if (waterUnderKeel < 0) {
+    // keel on the bed: lift the hull so the keel sits at the bed, no pitch
+    return { heave: def.draft - stillDepth, pitch: 0, aground: true, waterUnderKeel, headingSign };
+  }
+  return { heave: fit.b, pitch: Math.atan(fit.m), aground: false, waterUnderKeel, headingSign };
+}
+
+/**
+ * Side-view outline in ship coordinates: bow at +x, z = 0 at the loaded
+ * waterline, metres.  Returns shapes drawn in order: { pts, part, clip }.
+ *   part: 'hull' | 'boot' | 'house' | 'funnel' | 'fitting' | 'mast'
+ *   clip: true → clipped to the hull outline (for the boot topping)
+ */
+function vesselShapes(def) {
+  const L = def.LOA;
+  const T = def.draft;
+  const F = def.hullDepth - def.draft;          // freeboard
+  const shapes = [];
+  const rect = (x0, x1, z0, z1, part) => shapes.push({ part, pts: [[x0, z0], [x1, z0], [x1, z1], [x0, z1]] });
+
+  if (def.layout === 'boat') {
+    shapes.push({ part: 'hull', pts: [[-L / 2, F], [L / 2, F + 0.35], [L / 2 - 0.6, -0.15], [L / 2 - 2.2, -T], [-L / 2 + 0.6, -T], [-L / 2, -0.15]] });
+    shapes.push({ part: 'boot', clip: true, pts: [[-L, -0.25], [L, -0.25], [L, 0.15], [-L, 0.15]] });
+    rect(-1.6, 1.4, F, F + 1.5, 'house');
+    rect(-0.4, 0.4, F + 1.5, F + 3.2, 'mast');
+    return shapes;
+  }
+
+  // hull with a raked stem and a cut-away stern
+  shapes.push({ part: 'hull', pts: [[-L / 2, F], [L / 2, F], [L / 2 - 0.045 * L, -T], [-L / 2 + 0.07 * L, -T], [-L / 2 + 0.015 * L, -0.35 * T], [-L / 2, 0.2 * F]] });
+  shapes.push({ part: 'boot', clip: true, pts: [[-L, -1.2], [L, -1.2], [L, 0.6], [-L, 0.6]] });
+  // forecastle
+  rect(L / 2 - 0.07 * L, L / 2 - 0.004 * L, F, F + 2.2, 'house');
+  rect(L / 2 - 0.035 * L, L / 2 - 0.03 * L, F + 2.2, F + 13, 'mast');
+
+  const aftHouse = (height, decks) => {
+    const x0 = -L / 2 + 0.035 * L;
+    const x1 = -L / 2 + 0.135 * L;
+    rect(x0, x1, F, F + height, 'house');
+    rect(x0 + 0.012 * L, x1 - 0.012 * L, F + height, F + height + 3, 'house');
+    rect(x0 + 0.005 * L, x0 + 0.03 * L, F + height + 2, F + height + 7, 'funnel');
+    rect(x1 - 0.02 * L, x1 - 0.015 * L, F + height + 3, F + height + 10, 'mast');
+    for (let i = 1; i < decks; i++) shapes.push({ part: 'deckline', pts: [[x0, F + (height * i) / decks], [x1, F + (height * i) / decks]] });
+  };
+
+  if (def.layout === 'tanker') {
+    aftHouse(11, 4);
+    for (const xf of [-0.18, -0.06, 0.06, 0.18]) rect(xf * L - 0.012 * L, xf * L + 0.012 * L, F, F + 1.6, 'fitting');
+    // raised catwalk along the deck
+    shapes.push({ part: 'deckline', pts: [[-L / 2 + 0.14 * L, F + 1.8], [L / 2 - 0.08 * L, F + 1.8]] });
+    rect(-0.3 * L, -0.29 * L, F, F + 1.8, 'mast');
+    rect(0.3 * L, 0.31 * L, F, F + 1.8, 'mast');
+  } else if (def.layout === 'laker-aft') {
+    aftHouse(12, 4);
+    // hatch covers
+    const hx0 = -L / 2 + 0.16 * L;
+    const hx1 = L / 2 - 0.1 * L;
+    const pitch = 0.05 * L;
+    for (let x = hx0; x + 0.8 * pitch <= hx1; x += pitch) rect(x, x + 0.8 * pitch, F, F + 0.7, 'fitting');
+    // self-unloading boom stowed along the deck, pivoting on a pedestal by the house
+    const px = -L / 2 + 0.15 * L;
+    rect(px, px + 0.025 * L, F, F + 6, 'fitting');
+    shapes.push({ part: 'fitting', pts: [[px + 0.01 * L, F + 6], [px + 0.37 * L, F + 4.6], [px + 0.37 * L, F + 5.6], [px + 0.01 * L, F + 7.4]] });
+  } else if (def.layout === 'laker-forward') {
+    // pilothouse forward, engine house and funnel aft, hatches between
+    const bx0 = L / 2 - 0.12 * L;
+    const bx1 = L / 2 - 0.025 * L;
+    rect(bx0, bx1, F, F + 6, 'house');
+    rect(bx0 + 0.01 * L, bx1 - 0.01 * L, F + 6, F + 9, 'house');
+    rect(bx0 + 0.025 * L, bx1 - 0.03 * L, F + 9, F + 11.5, 'house');
+    shapes.push({ part: 'deckline', pts: [[bx0, F + 3], [bx1, F + 3]] });
+    const ax0 = -L / 2 + 0.03 * L;
+    const ax1 = -L / 2 + 0.13 * L;
+    rect(ax0, ax1, F, F + 7, 'house');
+    rect(ax0 + 0.02 * L, ax0 + 0.045 * L, F + 7, F + 13.5, 'funnel');
+    shapes.push({ part: 'deckline', pts: [[ax0, F + 3.5], [ax1, F + 3.5]] });
+    rect(ax1 - 0.01 * L, ax1 - 0.005 * L, F + 7, F + 15, 'mast');
+    const hx0 = ax1 + 0.03 * L;
+    const hx1 = bx0 - 0.02 * L;
+    const pitch = 0.045 * L;
+    for (let x = hx0; x + 0.75 * pitch <= hx1; x += pitch) rect(x, x + 0.75 * pitch, F, F + 0.6, 'fitting');
+  }
+  return shapes;
+}
+
+return { VESSELS, vesselById, fitWaterline, vesselPose, vesselShapes };
 })();
 
 __m.wavefield = (function () {
@@ -1267,7 +1429,7 @@ __m.render = (function () {
 // render.js — canvas drawing for the overview, the zoom window and the two charts.
 // Colours come from the page's CSS tokens so the canvases follow the theme.
 
-const TOKENS = ['fg', 'muted', 'line', 'accent', 'accent-soft', 'water-top', 'water-deep', 'water-fill', 'bed', 'bed-dark', 'sky', 'foam', 'breaking', 'wind', 'west', 'east', 'grid', 'panel'];
+const TOKENS = ['fg', 'muted', 'line', 'accent', 'accent-soft', 'water-top', 'water-deep', 'water-fill', 'bed', 'bed-dark', 'sky', 'foam', 'breaking', 'wind', 'west', 'east', 'grid', 'panel', 'ship-hull', 'ship-edge', 'ship-boot', 'ship-house', 'ship-funnel', 'ship-fitting'];
 
 function readPalette() {
   const cs = getComputedStyle(document.documentElement);
@@ -1644,11 +1806,14 @@ function drawZoom(ctx, W, H, v, pal) {
   const grad = ctx.createLinearGradient(0, g.yWater - 10, 0, H);
   grad.addColorStop(0, pal.waterTop);
   grad.addColorStop(1, pal.waterDeep);
-  ctx.beginPath();
-  ctx.moveTo(0, surfY[0]);
-  for (let p = 1; p < n; p++) ctx.lineTo(xPx(p), surfY[p]);
-  for (let p = n - 1; p >= 0; p--) ctx.lineTo(xPx(p), Math.min(H + 2, bedY[p]));
-  ctx.closePath();
+  const waterPath = () => {
+    ctx.beginPath();
+    ctx.moveTo(0, surfY[0]);
+    for (let p = 1; p < n; p++) ctx.lineTo(xPx(p), surfY[p]);
+    for (let p = n - 1; p >= 0; p--) ctx.lineTo(xPx(p), Math.min(H + 2, bedY[p]));
+    ctx.closePath();
+  };
+  waterPath();
   ctx.fillStyle = grad;
   ctx.fill();
   // bed
@@ -1731,6 +1896,9 @@ function drawZoom(ctx, W, H, v, pal) {
   }
   ctx.lineCap = 'butt';
 
+  // vessel
+  if (v.vessel) drawVessel(ctx, W, H, g, v, pal, grad, waterPath);
+
   // depth ticks (left) and scale bar (bottom right)
   ctx.font = `11px ${pal.mono}`;
   ctx.fillStyle = pal.fg;
@@ -1766,18 +1934,35 @@ function drawZoom(ctx, W, H, v, pal) {
     ctx.fillText(`bed ${fmt(dc, 0)} m down, below this frame ↓`, W / 2, H - 18);
   }
 
-  // HUD
-  ctx.textBaseline = 'top';
-  ctx.textAlign = 'left';
-  ctx.fillStyle = pal.fg;
-  ctx.font = `600 12px ${pal.sans}`;
+  // HUD, on a translucent backing so it stays readable over a tall ship
   const from = dir > 0 ? ends[0] : ends[1];
   const dist = dir > 0 ? center : L - center;
-  ctx.fillText(`${fmt(center / 1e3, 1)} km from ${ends[0]}  ·  fetch ${fmt(dist / 1e3, 0)} km from ${from}`, 10, 8);
-  ctx.font = `11px ${pal.mono}`;
-  ctx.fillStyle = pal.muted;
   const dc = fine.d[Math.floor(n / 2)];
-  ctx.fillText(`depth ${fmt(dc, 1)} m   Hs ${fmt(fine.Hs[Math.floor(n / 2)], 2)} m   Tp ${fmt(fine.Tp[Math.floor(n / 2)], 1)} s   L ${fmt(v.Lp, 0)} m`, 10, 26);
+  const hud = [
+    { text: `${fmt(center / 1e3, 1)} km from ${ends[0]}  ·  fetch ${fmt(dist / 1e3, 0)} km from ${from}`, font: `600 12px ${pal.sans}`, color: pal.fg },
+    { text: `depth ${fmt(dc, 1)} m   Hs ${fmt(fine.Hs[Math.floor(n / 2)], 2)} m   Tp ${fmt(fine.Tp[Math.floor(n / 2)], 1)} s   L ${fmt(v.Lp, 0)} m`, font: `11px ${pal.mono}`, color: pal.muted },
+  ];
+  if (v.vessel) {
+    const { def, pose } = v.vessel;
+    let line = `${def.name}: ${def.LOA} × ${def.beam} m, draft ${def.draft} m`;
+    let color = pal.muted;
+    if (pose.aground) {
+      line += `  ·  AGROUND: ${fmt(def.draft + pose.waterUnderKeel, 1)} m of water under an ${def.draft} m draft`;
+      color = pal.breaking;
+    } else if (v.Lp > 0) {
+      line += `  ·  ${fmt(def.LOA / v.Lp, 1)} wavelengths along the hull  ·  pitch ${fmt((pose.pitch * 180) / Math.PI, 1)}°  ·  heave ${pose.heave >= 0 ? '+' : ''}${fmt(pose.heave, 1)} m`;
+    }
+    hud.push({ text: line, font: `11px ${pal.mono}`, color });
+  }
+  let hudW = 0;
+  for (const h of hud) { ctx.font = h.font; hudW = Math.max(hudW, ctx.measureText(h.text).width); }
+  ctx.fillStyle = pal.sky;
+  ctx.globalAlpha = 0.82;
+  ctx.fillRect(4, 4, hudW + 12, 8 + hud.length * 15 + 2);
+  ctx.globalAlpha = 1;
+  ctx.textBaseline = 'top';
+  ctx.textAlign = 'left';
+  hud.forEach((h, i) => { ctx.font = h.font; ctx.fillStyle = h.color; ctx.fillText(h.text, 10, 8 + i * 15 + (i > 0 ? 3 : 0)); });
   // wind arrow
   if (U10 > 0) {
     const y = 16;
@@ -1801,6 +1986,74 @@ function drawZoom(ctx, W, H, v, pal) {
     ctx.fillText(`wind ${fmt(U10, 1)} m/s`, W - 24, y + 8);
   }
   return g;
+}
+
+function drawVessel(ctx, W, H, g, v, pal, waterGrad, waterPath) {
+  const { def, pose, shapes } = v.vessel;
+  const xc = (v.win.center - v.fine.x0);        // metres from the window's left edge
+  const cs = Math.cos(pose.pitch);
+  const sn = Math.sin(pose.pitch);
+  const hs = pose.headingSign;
+  // ship coords (x bow+, z up) → window metres → pixels
+  const toPx = ([x, z]) => {
+    const X = hs * x;
+    const Xr = X * cs - z * sn;
+    const Zr = X * sn + z * cs;
+    return [(xc + Xr) * g.sx, g.yWater - (pose.heave + Zr) * g.sy];
+  };
+  const path = (pts) => {
+    ctx.beginPath();
+    pts.forEach((p, i) => { const [px, py] = toPx(p); if (i === 0) ctx.moveTo(px, py); else ctx.lineTo(px, py); });
+    ctx.closePath();
+  };
+  const hull = shapes.find((s) => s.part === 'hull');
+  let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+  for (const s of shapes) for (const p of s.pts) { const [px, py] = toPx(p); minX = Math.min(minX, px); maxX = Math.max(maxX, px); minY = Math.min(minY, py); maxY = Math.max(maxY, py); }
+  if (maxX < -10 || minX > W + 10) return;
+  const fill = { hull: pal.shipHull, boot: pal.shipBoot, house: pal.shipHouse, funnel: pal.shipFunnel, fitting: pal.shipFitting, mast: pal.shipFitting };
+  for (const s of shapes) {
+    if (s.part === 'deckline') {
+      ctx.beginPath();
+      const [ax, ay] = toPx(s.pts[0]);
+      const [bx, by] = toPx(s.pts[1]);
+      ctx.moveTo(ax, ay);
+      ctx.lineTo(bx, by);
+      ctx.strokeStyle = pal.shipFitting;
+      ctx.lineWidth = 1;
+      ctx.stroke();
+      continue;
+    }
+    if (s.clip) {
+      ctx.save();
+      path(hull.pts);
+      ctx.clip();
+      path(s.pts);
+      ctx.fillStyle = fill[s.part];
+      ctx.fill();
+      ctx.restore();
+      continue;
+    }
+    path(s.pts);
+    ctx.fillStyle = fill[s.part] || pal.shipFitting;
+    ctx.fill();
+    if (s.part === 'hull' || s.part === 'house') {
+      ctx.strokeStyle = s.part === 'hull' ? pal.shipEdge : pal.shipFitting;
+      ctx.lineWidth = 1;
+      ctx.stroke();
+    }
+  }
+  // the underwater hull seen through the water: tint the submerged part
+  ctx.save();
+  ctx.beginPath();
+  const x0 = Math.max(0, minX - 2);
+  ctx.rect(x0, Math.max(0, minY - 2), Math.min(W, maxX + 2) - x0, Math.min(H, maxY + 2) - Math.max(0, minY - 2));
+  ctx.clip();
+  waterPath();
+  ctx.globalAlpha = 0.6;
+  ctx.fillStyle = waterGrad;
+  ctx.fill();
+  ctx.globalAlpha = 1;
+  ctx.restore();
 }
 
 // ---------------------------------------------------------------------------
@@ -1981,6 +2234,7 @@ const {
 const { PRESETS, presetById, depthFunction, widthFunction, sampleDepths, cloneProfile, withLength } = __m.bathymetry;
 const { WaveField } = __m.wavefield;
 const { SlowModel } = __m.slowmodel;
+const { VESSELS, vesselById, vesselPose, vesselShapes } = __m.vessel;
 const { readPalette, fitCanvas, drawOverview, drawZoom, drawSpectrum, drawGauges, overviewGeometry, zoomGeometry, fmt } = __m.render;
 
 const M_COARSE = 600;
@@ -2007,7 +2261,9 @@ const state = {
   lakeTime: 0,
   hoverX: null,
   compareId: '',
+  vesselId: 'tanker',
 };
+let vesselShapeCache = { id: '', shapes: null };
 let compare = null;   // { profile, name, depths, dx, wf, dir, coarse, hsMax, tiltEq, seicheT }
 
 let L = 0;
@@ -2260,6 +2516,16 @@ function setupControls() {
     setWindowCenter(state.win.center);
     refreshLabels();
   });
+  const vs = $('vessel');
+  for (const v of VESSELS) {
+    const o = document.createElement('option');
+    o.value = v.id;
+    o.textContent = v.name;
+    vs.appendChild(o);
+  }
+  vs.value = state.vesselId;
+  vs.addEventListener('change', () => { state.vesselId = vs.value; });
+
   $('exag').addEventListener('change', () => { state.exag = +$('exag').value; dirty = true; refreshLabels(); });
   $('jumpUp').addEventListener('click', () => setWindowCenter(state.dir > 0 ? 1500 : L - 1500));
   $('jumpMid').addEventListener('click', () => setWindowCenter(L / 2));
@@ -2297,7 +2563,7 @@ function loadPreset(id) {
   $('length').value = String(Math.round(p.length / 1e3));
   $('lengthVal').textContent = `${Math.round(p.length / 1e3)} km`;
   buildModels({ keepWater: false });
-  state.win.center = state.dir > 0 ? L - 3000 : 3000;
+  state.win.center = state.dir > 0 ? L - 8000 : 8000;
   steadySea();
   setWindowCenter(state.win.center);
   refreshLabels();
@@ -2312,7 +2578,7 @@ function refreshLabels() {
   $('profileNote').textContent = `${p.stats}${state.edited ? ' · edited' : ''}. ${p.note}`;
   $('winPosVal').textContent = `${fmt(state.win.center / 1e3, 1)} km from ${p.ends[0]}`;
   $('winWidthVal').textContent = `${state.win.width} m`;
-  $('zoomHint').textContent = `${state.win.width} m wide, vertical ×${state.exag}, waves at ${state.waveSpeed === 0 ? 'rest' : state.waveSpeed + '× real time'}`;
+  $('zoomHint').textContent = `${state.win.width} m wide, vertical ×${state.exag} (ship included), waves at ${state.waveSpeed === 0 ? 'rest' : state.waveSpeed + '× real time'}`;
   $('legWest').textContent = p.ends[0];
   $('legEast').textContent = p.ends[1];
   $('jumpUp').textContent = `${state.dir > 0 ? p.ends[0] : p.ends[1]} (upwind)`;
@@ -2517,6 +2783,17 @@ function updateReadouts() {
 // "Why" text
 // ---------------------------------------------------------------------------
 
+function currentVessel(eta) {
+  const def = vesselById(state.vesselId);
+  if (!def.LOA) return null;
+  if (vesselShapeCache.id !== def.id) vesselShapeCache = { id: def.id, shapes: vesselShapes(def) };
+  const f = wf.fine;
+  const pc = Math.floor(f.n / 2);
+  if (f.d[pc] < 0.3) return null;
+  const pose = vesselPose(def, f, eta, pc, -state.dir);   // bow into the wind
+  return { def, pose, shapes: vesselShapeCache.shapes };
+}
+
 function updateWhy() {
   const { sea, profile, dir, opts } = state;
   const U = state.U10;
@@ -2560,7 +2837,18 @@ function updateWhy() {
           ? ` Hs/d has reached ${fmt(s.Hs / s.d, 2)}, past the ${GAMMA_SIG} limit, so the waves are breaking and the surplus energy goes into foam.`
           : ` Hs/d is ${fmt(s.Hs / s.d, 2)}, below the ${GAMMA_SIG} breaking limit.`;
       }
-      paras.push(p2);
+      const def = vesselById(state.vesselId);
+      if (def.LOA) {
+        const ratio = def.LOA / s.Lp;
+        const h = s.d - def.draft;
+        let p2b = `The ${def.name.toLowerCase()} drawn in the window has a draft of ${def.draft} m, leaving ${fmt(h, 1)} m of water under the keel here${h < 0 ? ': it is aground' : ''}.`;
+        if (ratio > 1.8) p2b += ` Its ${def.LOA} m hull spans ${fmt(ratio, 1)} wavelengths, so the crests and troughs average out along it and it rides nearly level.`;
+        else if (ratio > 0.6) p2b += ` Its ${def.LOA} m hull is close to one wavelength (${fmt(ratio, 1)}): this is the sea that pitches a ship hardest and alternately hogs and sags the hull.`;
+        else p2b += ` At ${fmt(ratio, 2)} wavelengths long it is small compared with the waves and simply rides over them.`;
+        paras.push(p2 + ' ' + p2b);
+      } else {
+        paras.push(p2);
+      }
     } else {
       paras.push(`The window is on dry ground or over water too shallow to carry waves. Move it along the lake.`);
     }
@@ -2660,6 +2948,7 @@ function frame(now) {
     drawZoom(ctx, W, H, {
       fine: wf.fine, eta, win: state.win, exag: state.exag, particles, dir: state.dir, U10: state.U10,
       L, ends: state.profile.ends, opts: state.opts, center: state.win.center, Lp: s.Lp,
+      vessel: currentVessel(eta),
     }, pal);
   }
   if (frameNo % 6 === 0) { renderSpectrum(); renderGauges(); }

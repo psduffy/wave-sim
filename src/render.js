@@ -1,7 +1,7 @@
 // render.js — canvas drawing for the overview, the zoom window and the two charts.
 // Colours come from the page's CSS tokens so the canvases follow the theme.
 
-const TOKENS = ['fg', 'muted', 'line', 'accent', 'accent-soft', 'water-top', 'water-deep', 'water-fill', 'bed', 'bed-dark', 'sky', 'foam', 'breaking', 'wind', 'west', 'east', 'grid', 'panel'];
+const TOKENS = ['fg', 'muted', 'line', 'accent', 'accent-soft', 'water-top', 'water-deep', 'water-fill', 'bed', 'bed-dark', 'sky', 'foam', 'breaking', 'wind', 'west', 'east', 'grid', 'panel', 'ship-hull', 'ship-edge', 'ship-boot', 'ship-house', 'ship-funnel', 'ship-fitting'];
 
 export function readPalette() {
   const cs = getComputedStyle(document.documentElement);
@@ -378,11 +378,14 @@ export function drawZoom(ctx, W, H, v, pal) {
   const grad = ctx.createLinearGradient(0, g.yWater - 10, 0, H);
   grad.addColorStop(0, pal.waterTop);
   grad.addColorStop(1, pal.waterDeep);
-  ctx.beginPath();
-  ctx.moveTo(0, surfY[0]);
-  for (let p = 1; p < n; p++) ctx.lineTo(xPx(p), surfY[p]);
-  for (let p = n - 1; p >= 0; p--) ctx.lineTo(xPx(p), Math.min(H + 2, bedY[p]));
-  ctx.closePath();
+  const waterPath = () => {
+    ctx.beginPath();
+    ctx.moveTo(0, surfY[0]);
+    for (let p = 1; p < n; p++) ctx.lineTo(xPx(p), surfY[p]);
+    for (let p = n - 1; p >= 0; p--) ctx.lineTo(xPx(p), Math.min(H + 2, bedY[p]));
+    ctx.closePath();
+  };
+  waterPath();
   ctx.fillStyle = grad;
   ctx.fill();
   // bed
@@ -465,6 +468,9 @@ export function drawZoom(ctx, W, H, v, pal) {
   }
   ctx.lineCap = 'butt';
 
+  // vessel
+  if (v.vessel) drawVessel(ctx, W, H, g, v, pal, grad, waterPath);
+
   // depth ticks (left) and scale bar (bottom right)
   ctx.font = `11px ${pal.mono}`;
   ctx.fillStyle = pal.fg;
@@ -500,18 +506,35 @@ export function drawZoom(ctx, W, H, v, pal) {
     ctx.fillText(`bed ${fmt(dc, 0)} m down, below this frame ↓`, W / 2, H - 18);
   }
 
-  // HUD
-  ctx.textBaseline = 'top';
-  ctx.textAlign = 'left';
-  ctx.fillStyle = pal.fg;
-  ctx.font = `600 12px ${pal.sans}`;
+  // HUD, on a translucent backing so it stays readable over a tall ship
   const from = dir > 0 ? ends[0] : ends[1];
   const dist = dir > 0 ? center : L - center;
-  ctx.fillText(`${fmt(center / 1e3, 1)} km from ${ends[0]}  ·  fetch ${fmt(dist / 1e3, 0)} km from ${from}`, 10, 8);
-  ctx.font = `11px ${pal.mono}`;
-  ctx.fillStyle = pal.muted;
   const dc = fine.d[Math.floor(n / 2)];
-  ctx.fillText(`depth ${fmt(dc, 1)} m   Hs ${fmt(fine.Hs[Math.floor(n / 2)], 2)} m   Tp ${fmt(fine.Tp[Math.floor(n / 2)], 1)} s   L ${fmt(v.Lp, 0)} m`, 10, 26);
+  const hud = [
+    { text: `${fmt(center / 1e3, 1)} km from ${ends[0]}  ·  fetch ${fmt(dist / 1e3, 0)} km from ${from}`, font: `600 12px ${pal.sans}`, color: pal.fg },
+    { text: `depth ${fmt(dc, 1)} m   Hs ${fmt(fine.Hs[Math.floor(n / 2)], 2)} m   Tp ${fmt(fine.Tp[Math.floor(n / 2)], 1)} s   L ${fmt(v.Lp, 0)} m`, font: `11px ${pal.mono}`, color: pal.muted },
+  ];
+  if (v.vessel) {
+    const { def, pose } = v.vessel;
+    let line = `${def.name}: ${def.LOA} × ${def.beam} m, draft ${def.draft} m`;
+    let color = pal.muted;
+    if (pose.aground) {
+      line += `  ·  AGROUND: ${fmt(def.draft + pose.waterUnderKeel, 1)} m of water under an ${def.draft} m draft`;
+      color = pal.breaking;
+    } else if (v.Lp > 0) {
+      line += `  ·  ${fmt(def.LOA / v.Lp, 1)} wavelengths along the hull  ·  pitch ${fmt((pose.pitch * 180) / Math.PI, 1)}°  ·  heave ${pose.heave >= 0 ? '+' : ''}${fmt(pose.heave, 1)} m`;
+    }
+    hud.push({ text: line, font: `11px ${pal.mono}`, color });
+  }
+  let hudW = 0;
+  for (const h of hud) { ctx.font = h.font; hudW = Math.max(hudW, ctx.measureText(h.text).width); }
+  ctx.fillStyle = pal.sky;
+  ctx.globalAlpha = 0.82;
+  ctx.fillRect(4, 4, hudW + 12, 8 + hud.length * 15 + 2);
+  ctx.globalAlpha = 1;
+  ctx.textBaseline = 'top';
+  ctx.textAlign = 'left';
+  hud.forEach((h, i) => { ctx.font = h.font; ctx.fillStyle = h.color; ctx.fillText(h.text, 10, 8 + i * 15 + (i > 0 ? 3 : 0)); });
   // wind arrow
   if (U10 > 0) {
     const y = 16;
@@ -535,6 +558,74 @@ export function drawZoom(ctx, W, H, v, pal) {
     ctx.fillText(`wind ${fmt(U10, 1)} m/s`, W - 24, y + 8);
   }
   return g;
+}
+
+function drawVessel(ctx, W, H, g, v, pal, waterGrad, waterPath) {
+  const { def, pose, shapes } = v.vessel;
+  const xc = (v.win.center - v.fine.x0);        // metres from the window's left edge
+  const cs = Math.cos(pose.pitch);
+  const sn = Math.sin(pose.pitch);
+  const hs = pose.headingSign;
+  // ship coords (x bow+, z up) → window metres → pixels
+  const toPx = ([x, z]) => {
+    const X = hs * x;
+    const Xr = X * cs - z * sn;
+    const Zr = X * sn + z * cs;
+    return [(xc + Xr) * g.sx, g.yWater - (pose.heave + Zr) * g.sy];
+  };
+  const path = (pts) => {
+    ctx.beginPath();
+    pts.forEach((p, i) => { const [px, py] = toPx(p); if (i === 0) ctx.moveTo(px, py); else ctx.lineTo(px, py); });
+    ctx.closePath();
+  };
+  const hull = shapes.find((s) => s.part === 'hull');
+  let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+  for (const s of shapes) for (const p of s.pts) { const [px, py] = toPx(p); minX = Math.min(minX, px); maxX = Math.max(maxX, px); minY = Math.min(minY, py); maxY = Math.max(maxY, py); }
+  if (maxX < -10 || minX > W + 10) return;
+  const fill = { hull: pal.shipHull, boot: pal.shipBoot, house: pal.shipHouse, funnel: pal.shipFunnel, fitting: pal.shipFitting, mast: pal.shipFitting };
+  for (const s of shapes) {
+    if (s.part === 'deckline') {
+      ctx.beginPath();
+      const [ax, ay] = toPx(s.pts[0]);
+      const [bx, by] = toPx(s.pts[1]);
+      ctx.moveTo(ax, ay);
+      ctx.lineTo(bx, by);
+      ctx.strokeStyle = pal.shipFitting;
+      ctx.lineWidth = 1;
+      ctx.stroke();
+      continue;
+    }
+    if (s.clip) {
+      ctx.save();
+      path(hull.pts);
+      ctx.clip();
+      path(s.pts);
+      ctx.fillStyle = fill[s.part];
+      ctx.fill();
+      ctx.restore();
+      continue;
+    }
+    path(s.pts);
+    ctx.fillStyle = fill[s.part] || pal.shipFitting;
+    ctx.fill();
+    if (s.part === 'hull' || s.part === 'house') {
+      ctx.strokeStyle = s.part === 'hull' ? pal.shipEdge : pal.shipFitting;
+      ctx.lineWidth = 1;
+      ctx.stroke();
+    }
+  }
+  // the underwater hull seen through the water: tint the submerged part
+  ctx.save();
+  ctx.beginPath();
+  const x0 = Math.max(0, minX - 2);
+  ctx.rect(x0, Math.max(0, minY - 2), Math.min(W, maxX + 2) - x0, Math.min(H, maxY + 2) - Math.max(0, minY - 2));
+  ctx.clip();
+  waterPath();
+  ctx.globalAlpha = 0.6;
+  ctx.fillStyle = waterGrad;
+  ctx.fill();
+  ctx.globalAlpha = 1;
+  ctx.restore();
 }
 
 // ---------------------------------------------------------------------------

@@ -6,7 +6,7 @@
 
 import { readFileSync, writeFileSync, mkdirSync } from 'node:fs';
 
-const ORDER = ['physics', 'bathymetry', 'wavefield', 'slowmodel', 'render', 'main'];
+const ORDER = ['physics', 'bathymetry', 'vessel', 'wavefield', 'slowmodel', 'render', 'main'];
 const parts = ['const __m = {};'];
 for (const name of ORDER) {
   const src = readFileSync(new URL(`./src/${name}.js`, import.meta.url), 'utf8');

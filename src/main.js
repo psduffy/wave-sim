@@ -8,6 +8,7 @@ import {
 import { PRESETS, presetById, depthFunction, widthFunction, sampleDepths, cloneProfile, withLength } from './bathymetry.js';
 import { WaveField } from './wavefield.js';
 import { SlowModel } from './slowmodel.js';
+import { VESSELS, vesselById, vesselPose, vesselShapes } from './vessel.js';
 import { readPalette, fitCanvas, drawOverview, drawZoom, drawSpectrum, drawGauges, overviewGeometry, zoomGeometry, fmt } from './render.js';
 
 const M_COARSE = 600;
@@ -34,7 +35,9 @@ const state = {
   lakeTime: 0,
   hoverX: null,
   compareId: '',
+  vesselId: 'tanker',
 };
+let vesselShapeCache = { id: '', shapes: null };
 let compare = null;   // { profile, name, depths, dx, wf, dir, coarse, hsMax, tiltEq, seicheT }
 
 let L = 0;
@@ -287,6 +290,16 @@ function setupControls() {
     setWindowCenter(state.win.center);
     refreshLabels();
   });
+  const vs = $('vessel');
+  for (const v of VESSELS) {
+    const o = document.createElement('option');
+    o.value = v.id;
+    o.textContent = v.name;
+    vs.appendChild(o);
+  }
+  vs.value = state.vesselId;
+  vs.addEventListener('change', () => { state.vesselId = vs.value; });
+
   $('exag').addEventListener('change', () => { state.exag = +$('exag').value; dirty = true; refreshLabels(); });
   $('jumpUp').addEventListener('click', () => setWindowCenter(state.dir > 0 ? 1500 : L - 1500));
   $('jumpMid').addEventListener('click', () => setWindowCenter(L / 2));
@@ -324,7 +337,7 @@ function loadPreset(id) {
   $('length').value = String(Math.round(p.length / 1e3));
   $('lengthVal').textContent = `${Math.round(p.length / 1e3)} km`;
   buildModels({ keepWater: false });
-  state.win.center = state.dir > 0 ? L - 3000 : 3000;
+  state.win.center = state.dir > 0 ? L - 8000 : 8000;
   steadySea();
   setWindowCenter(state.win.center);
   refreshLabels();
@@ -339,7 +352,7 @@ function refreshLabels() {
   $('profileNote').textContent = `${p.stats}${state.edited ? ' · edited' : ''}. ${p.note}`;
   $('winPosVal').textContent = `${fmt(state.win.center / 1e3, 1)} km from ${p.ends[0]}`;
   $('winWidthVal').textContent = `${state.win.width} m`;
-  $('zoomHint').textContent = `${state.win.width} m wide, vertical ×${state.exag}, waves at ${state.waveSpeed === 0 ? 'rest' : state.waveSpeed + '× real time'}`;
+  $('zoomHint').textContent = `${state.win.width} m wide, vertical ×${state.exag} (ship included), waves at ${state.waveSpeed === 0 ? 'rest' : state.waveSpeed + '× real time'}`;
   $('legWest').textContent = p.ends[0];
   $('legEast').textContent = p.ends[1];
   $('jumpUp').textContent = `${state.dir > 0 ? p.ends[0] : p.ends[1]} (upwind)`;
@@ -544,6 +557,17 @@ function updateReadouts() {
 // "Why" text
 // ---------------------------------------------------------------------------
 
+function currentVessel(eta) {
+  const def = vesselById(state.vesselId);
+  if (!def.LOA) return null;
+  if (vesselShapeCache.id !== def.id) vesselShapeCache = { id: def.id, shapes: vesselShapes(def) };
+  const f = wf.fine;
+  const pc = Math.floor(f.n / 2);
+  if (f.d[pc] < 0.3) return null;
+  const pose = vesselPose(def, f, eta, pc, -state.dir);   // bow into the wind
+  return { def, pose, shapes: vesselShapeCache.shapes };
+}
+
 function updateWhy() {
   const { sea, profile, dir, opts } = state;
   const U = state.U10;
@@ -587,7 +611,18 @@ function updateWhy() {
           ? ` Hs/d has reached ${fmt(s.Hs / s.d, 2)}, past the ${GAMMA_SIG} limit, so the waves are breaking and the surplus energy goes into foam.`
           : ` Hs/d is ${fmt(s.Hs / s.d, 2)}, below the ${GAMMA_SIG} breaking limit.`;
       }
-      paras.push(p2);
+      const def = vesselById(state.vesselId);
+      if (def.LOA) {
+        const ratio = def.LOA / s.Lp;
+        const h = s.d - def.draft;
+        let p2b = `The ${def.name.toLowerCase()} drawn in the window has a draft of ${def.draft} m, leaving ${fmt(h, 1)} m of water under the keel here${h < 0 ? ': it is aground' : ''}.`;
+        if (ratio > 1.8) p2b += ` Its ${def.LOA} m hull spans ${fmt(ratio, 1)} wavelengths, so the crests and troughs average out along it and it rides nearly level.`;
+        else if (ratio > 0.6) p2b += ` Its ${def.LOA} m hull is close to one wavelength (${fmt(ratio, 1)}): this is the sea that pitches a ship hardest and alternately hogs and sags the hull.`;
+        else p2b += ` At ${fmt(ratio, 2)} wavelengths long it is small compared with the waves and simply rides over them.`;
+        paras.push(p2 + ' ' + p2b);
+      } else {
+        paras.push(p2);
+      }
     } else {
       paras.push(`The window is on dry ground or over water too shallow to carry waves. Move it along the lake.`);
     }
@@ -687,6 +722,7 @@ function frame(now) {
     drawZoom(ctx, W, H, {
       fine: wf.fine, eta, win: state.win, exag: state.exag, particles, dir: state.dir, U10: state.U10,
       L, ends: state.profile.ends, opts: state.opts, center: state.win.center, Lp: s.Lp,
+      vessel: currentVessel(eta),
     }, pal);
   }
   if (frameNo % 6 === 0) { renderSpectrum(); renderGauges(); }
