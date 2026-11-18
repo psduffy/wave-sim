@@ -1,0 +1,13 @@
+{
+  "name": "wave-sim",
+  "version": "0.1.0",
+  "description": "Interactive 2-D lake wave simulator: wind-wave growth, shoaling, breaking, wind set-up and seiches over real lake-bed profiles.",
+  "type": "module",
+  "private": true,
+  "scripts": {
+    "test": "node --test test/*.test.mjs",
+    "build": "node build.mjs",
+    "serve": "python3 -m http.server 8080"
+  },
+  "license": "MIT"
+}

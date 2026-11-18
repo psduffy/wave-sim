@@ -1,0 +1,313 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Lake Wave Lab</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+/* Layout: a fixed control rail on the left, an instrument stack on the right —
+   whole-lake overview above a to-scale window, then readouts, charts and notes. */
+:root {
+  --bg: #e9eef2;
+  --panel: #ffffff;
+  --panel-2: #f3f6f9;
+  --fg: #16222d;
+  --muted: #5b6b7a;
+  --line: #d1dae3;
+  --accent: #1d6f9b;
+  --accent-soft: #d8e9f3;
+  --water-top: #5aa6d6;
+  --water-deep: #194b70;
+  --water-fill: rgba(49, 128, 184, 0.55);
+  --bed: #a8865c;
+  --bed-dark: #6a5238;
+  --sky: #f6f9fb;
+  --foam: #ffffff;
+  --breaking: #c9502e;
+  --wind: #d99a2b;
+  --west: #d2762b;
+  --east: #1f8f82;
+  --grid: rgba(22, 34, 45, 0.08);
+  --font-sans: 'IBM Plex Sans', system-ui, -apple-system, 'Segoe UI', sans-serif;
+  --font-mono: 'IBM Plex Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #0d141b; --panel: #151f29; --panel-2: #1b2733; --fg: #e4ebf2; --muted: #95a6b6;
+    --line: #2a3a49; --accent: #5cb2e3; --accent-soft: #173347; --water-top: #3f86b7; --water-deep: #0a2a44;
+    --water-fill: rgba(49, 128, 184, 0.5); --bed: #7c6246; --bed-dark: #3c2f22; --sky: #101a23; --foam: #ffffff;
+    --breaking: #e3714c; --wind: #e8b04a; --west: #e68a3c; --east: #3fb3a3; --grid: rgba(228, 235, 242, 0.08);
+    color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #0d141b; --panel: #151f29; --panel-2: #1b2733; --fg: #e4ebf2; --muted: #95a6b6;
+  --line: #2a3a49; --accent: #5cb2e3; --accent-soft: #173347; --water-top: #3f86b7; --water-deep: #0a2a44;
+  --water-fill: rgba(49, 128, 184, 0.5); --bed: #7c6246; --bed-dark: #3c2f22; --sky: #101a23; --foam: #ffffff;
+  --breaking: #e3714c; --wind: #e8b04a; --west: #e68a3c; --east: #3fb3a3; --grid: rgba(228, 235, 242, 0.08);
+  color-scheme: dark;
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; }
+body {
+  background: var(--bg);
+  color: var(--fg);
+  font-family: var(--font-sans);
+  font-size: 14px;
+  line-height: 1.45;
+  padding-left: max(16px, env(safe-area-inset-left, 0px));
+  padding-right: max(16px, env(safe-area-inset-right, 0px));
+  padding-block: 12px 32px;
+}
+h1, h2, h3 { margin: 0; text-wrap: balance; font-weight: 600; }
+h1 { font-size: 20px; letter-spacing: -0.01em; }
+h2 { font-size: 14px; }
+h3 { font-size: 13px; }
+p { margin: 0; }
+button, select, input { font: inherit; color: inherit; }
+button { cursor: pointer; }
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+.top { display: flex; flex-wrap: wrap; align-items: flex-end; justify-content: space-between; gap: 12px 24px; margin-bottom: 12px; }
+.tagline { color: var(--muted); max-width: 62ch; }
+.badge { font-family: var(--font-mono); font-size: 11px; color: var(--muted); letter-spacing: 0.04em; text-transform: uppercase; }
+
+.layout { display: grid; grid-template-columns: 300px minmax(0, 1fr); gap: 14px; align-items: start; }
+@media (max-width: 960px) { .layout { grid-template-columns: minmax(0, 1fr); } }
+
+.controls { display: flex; flex-direction: column; gap: 10px; position: sticky; top: 8px; }
+@media (max-width: 960px) { .controls { position: static; } }
+.group { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px 12px; display: flex; flex-direction: column; gap: 8px; min-width: 0; }
+.group > h2 { display: flex; justify-content: space-between; align-items: baseline; font-size: 12px; letter-spacing: 0.06em; text-transform: uppercase; color: var(--muted); }
+.row { display: flex; align-items: center; justify-content: space-between; gap: 8px; min-width: 0; }
+.row label, .row .lbl { color: var(--fg); }
+.row .val { font-family: var(--font-mono); font-size: 12px; color: var(--muted); white-space: nowrap; font-variant-numeric: tabular-nums; }
+.row select { flex: 1 1 auto; min-width: 0; }
+input[type="range"] { width: 100%; accent-color: var(--accent); margin: 0; }
+select { background: var(--panel-2); border: 1px solid var(--line); border-radius: 6px; padding: 5px 8px; max-width: 100%; }
+.btn { background: var(--panel-2); border: 1px solid var(--line); border-radius: 6px; padding: 5px 10px; font-size: 13px; }
+.btn:hover { border-color: var(--accent); }
+.btn.on { background: var(--accent-soft); border-color: var(--accent); }
+.btn-row { display: flex; flex-wrap: wrap; gap: 6px; }
+.seg { display: flex; border: 1px solid var(--line); border-radius: 6px; overflow: hidden; }
+.seg button { flex: 1; border: 0; background: var(--panel-2); padding: 6px 4px; font-size: 13px; }
+.seg button.on { background: var(--accent); color: #fff; }
+.check { display: flex; align-items: center; gap: 8px; }
+.check input { accent-color: var(--accent); margin: 0; }
+.note { color: var(--muted); font-size: 12.5px; }
+.stage { display: flex; flex-direction: column; gap: 14px; min-width: 0; }
+.panel { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px 12px; min-width: 0; }
+.panel-head { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: baseline; gap: 6px 16px; margin-bottom: 6px; }
+.panel-head .hint { color: var(--muted); font-size: 12px; }
+canvas { display: block; width: 100%; border-radius: 6px; background: var(--sky); touch-action: none; }
+#overview { height: 320px; }
+#zoom { height: 340px; }
+#spectrum, #gauges { height: 190px; }
+.legend { display: flex; flex-wrap: wrap; gap: 4px 14px; font-size: 12px; color: var(--muted); margin-top: 6px; }
+.legend .sw { display: inline-block; width: 12px; height: 3px; vertical-align: middle; margin-right: 5px; border-radius: 2px; }
+
+.readouts { display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap: 10px; }
+.card { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px; min-width: 0; }
+.card h3 { font-size: 11px; letter-spacing: 0.06em; text-transform: uppercase; color: var(--muted); margin-bottom: 6px; }
+.card dl { margin: 0; display: grid; grid-template-columns: minmax(96px, auto) minmax(0, 1fr); gap: 4px 10px; align-items: baseline; }
+.card dt { color: var(--muted); font-size: 12.5px; }
+.card dd { margin: 0; text-align: right; font-family: var(--font-mono); font-size: 12.5px; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+.card dd.hot { color: var(--breaking); font-weight: 500; }
+.charts { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 14px; }
+.why p { max-width: 78ch; margin-bottom: 8px; }
+.why p:last-child { margin-bottom: 0; }
+.notes details > summary { cursor: pointer; font-weight: 600; }
+.notes .eq { font-family: var(--font-mono); font-size: 12.5px; background: var(--panel-2); padding: 8px 10px; border-radius: 6px; overflow-x: auto; margin: 6px 0; }
+.notes h3 { margin-top: 12px; }
+.notes ul { margin: 6px 0 0; padding-left: 20px; }
+.notes li { margin-bottom: 4px; max-width: 80ch; }
+.tip {
+  position: fixed; pointer-events: none; z-index: 20; background: var(--panel); border: 1px solid var(--line);
+  border-radius: 6px; padding: 6px 8px; font-family: var(--font-mono); font-size: 11.5px; line-height: 1.4;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.18); white-space: nowrap;
+}
+@media (prefers-reduced-motion: reduce) { * { scroll-behavior: auto; } }
+</style>
+</head>
+<body>
+<div class="app">
+  <header class="top">
+    <div class="brand">
+      <h1>Lake Wave Lab</h1>
+      <p class="tagline">Blow a wind along a lake cross-section and watch the sea grow, shoal, break, pile up against the shore and slosh back. Two clocks: wind waves in seconds, the lake itself in hours.</p>
+    </div>
+    <div class="badge" id="clock">lake clock 00:00 h</div>
+  </header>
+
+  <div class="layout">
+    <aside class="controls">
+      <div class="group">
+        <h2>Lake</h2>
+        <div class="row"><select id="preset" aria-label="Lake profile"></select></div>
+        <div class="row"><label for="length">Length</label><span class="val" id="lengthVal">388 km</span></div>
+        <input type="range" id="length" min="40" max="600" step="2" value="388">
+        <div class="btn-row">
+          <button class="btn" id="editBed" type="button" aria-pressed="false">Edit bed</button>
+          <button class="btn" id="resetBed" type="button">Reset bed</button>
+        </div>
+        <p class="note" id="profileNote"></p>
+        <div class="row"><label for="compare">Compare with</label></div>
+        <div class="row"><select id="compare" aria-label="Lake to compare against"><option value="">none</option></select></div>
+      </div>
+
+      <div class="group">
+        <h2>Wind</h2>
+        <div class="row"><label for="wind">Speed at 10 m</label><span class="val" id="windVal">15.0 m/s</span></div>
+        <input type="range" id="wind" min="0" max="30" step="0.5" value="15">
+        <div class="row"><span class="lbl">Blowing toward</span></div>
+        <div class="seg" id="dirSeg">
+          <button type="button" data-dir="-1" id="dirWest">◀ Toledo</button>
+          <button type="button" data-dir="1" id="dirEast" class="on">Buffalo ▶</button>
+        </div>
+        <div class="btn-row">
+          <button class="btn" id="calmSea" type="button" title="Flatten the sea and let the wind rebuild it on the lake clock">Calm sea, regrow</button>
+        </div>
+      </div>
+
+      <div class="group">
+        <h2>Clocks</h2>
+        <div class="row"><label for="lakeRate">Lake clock</label>
+          <select id="lakeRate">
+            <option value="0">paused</option>
+            <option value="60">1 s = 1 min</option>
+            <option value="600" selected>1 s = 10 min</option>
+            <option value="3600">1 s = 1 h</option>
+          </select>
+        </div>
+        <div class="row"><label for="waveSpeed">Wave motion</label>
+          <select id="waveSpeed">
+            <option value="0">paused</option>
+            <option value="0.5">½× real time</option>
+            <option value="1" selected>real time</option>
+            <option value="2">2× real time</option>
+          </select>
+        </div>
+        <div class="btn-row">
+          <button class="btn" id="resetLake" type="button" title="Flatten the water level and let the wind tilt it again">Level the lake</button>
+        </div>
+      </div>
+
+      <div class="group">
+        <h2>Window</h2>
+        <div class="row"><label for="winPos">Position</label><span class="val" id="winPosVal"></span></div>
+        <input type="range" id="winPos" min="0" max="1000" step="1" value="990">
+        <div class="btn-row">
+          <button class="btn" id="jumpUp" type="button">Upwind shore</button>
+          <button class="btn" id="jumpMid" type="button">Middle</button>
+          <button class="btn" id="jumpDown" type="button">Downwind shore</button>
+        </div>
+        <div class="row"><label for="winWidth">Width</label><span class="val" id="winWidthVal">400 m</span></div>
+        <input type="range" id="winWidth" min="0" max="100" step="1" value="40">
+        <div class="row"><label for="exag">Vertical exaggeration</label>
+          <select id="exag">
+            <option value="1">1× (true)</option>
+            <option value="2" selected>2×</option>
+            <option value="3">3×</option>
+            <option value="5">5×</option>
+            <option value="10">10×</option>
+          </select>
+        </div>
+      </div>
+
+      <div class="group">
+        <h2>Physics</h2>
+        <label class="check"><input type="checkbox" id="optShoaling" checked> Shoaling (energy-flux conservation)</label>
+        <label class="check"><input type="checkbox" id="optBreaking" checked> Depth-limited breaking</label>
+        <label class="check"><input type="checkbox" id="optNonlinear" checked> Crest sharpening (2nd-order Stokes)</label>
+        <label class="check"><input type="checkbox" id="optSetup" checked> Wind set-up and seiche</label>
+        <label class="check"><input type="checkbox" id="optOrbits" checked> Water-particle orbits</label>
+      </div>
+    </aside>
+
+    <main class="stage">
+      <section class="panel">
+        <div class="panel-head">
+          <h2>Whole lake</h2>
+          <span class="hint">Drag the window marker. Hover for local values. Edit bed: drag the points.</span>
+        </div>
+        <canvas id="overview" aria-label="Lake cross-section with wave height along the fetch"></canvas>
+      </section>
+
+      <section class="panel">
+        <div class="panel-head">
+          <h2>Window, drawn to scale</h2>
+          <span class="hint" id="zoomHint"></span>
+        </div>
+        <canvas id="zoom" aria-label="Wave surface over the lake bed inside the window"></canvas>
+      </section>
+
+      <section class="readouts" id="readouts"></section>
+
+      <section class="charts">
+        <div class="panel">
+          <div class="panel-head"><h3>Wave spectrum at the window</h3><span class="hint">energy per frequency</span></div>
+          <canvas id="spectrum" aria-label="Wave energy spectrum"></canvas>
+          <div class="legend"><span><i class="sw" style="background: var(--accent)"></i>here</span><span><i class="sw" style="background: var(--muted)"></i>same wind and fetch over deep water</span></div>
+        </div>
+        <div class="panel">
+          <div class="panel-head"><h3>Water level at the two shores</h3><span class="hint">lake clock, last 48 h</span></div>
+          <canvas id="gauges" aria-label="Water level at both ends over time"></canvas>
+          <div class="legend"><span><i class="sw" style="background: var(--west)"></i><span id="legWest">West</span></span><span><i class="sw" style="background: var(--east)"></i><span id="legEast">East</span></span></div>
+        </div>
+      </section>
+
+      <section class="panel why">
+        <div class="panel-head"><h2>Why it looks like this</h2><span class="hint">updates with the controls</span></div>
+        <div id="why"></div>
+      </section>
+
+      <section class="panel notes">
+        <details>
+          <summary>The physics behind each layer, with sources</summary>
+          <h3>1. Wind to waves: fetch- and depth-limited growth</h3>
+          <p>The wind stress factor U<sub>A</sub> = 0.71 U<sub>10</sub><sup>1.23</sup> feeds the Sverdrup–Munk–Bretschneider shallow-water growth curves (Shore Protection Manual 1984, eqs. 3-39 and 3-40). The tanh factors in d cap the growth: a shallow bed drains energy from the long waves through bottom friction and percolation, so the same wind over Lake Erie makes a lower, shorter, steeper sea than over Lake Superior.</p>
+          <div class="eq">gH/U<sub>A</sub>² = 0.283 · tanh[0.530 (gd/U<sub>A</sub>²)<sup>3/4</sup>] · tanh{ 0.00565 (gF/U<sub>A</sub>²)<sup>1/2</sup> / tanh[0.530 (gd/U<sub>A</sub>²)<sup>3/4</sup>] }<br>gT/U<sub>A</sub> = 7.54 · tanh[0.833 (gd/U<sub>A</sub>²)<sup>3/8</sup>] · tanh{ 0.0379 (gF/U<sub>A</sub>²)<sup>1/3</sup> / tanh[0.833 (gd/U<sub>A</sub>²)<sup>3/8</sup>] }</div>
+          <p>The generation depth d is the mean depth between the upwind shore and the point. A wind that has not blown long enough is duration-limited: the fetch it can "fill" in time t follows gt/U<sub>A</sub> = 68.8 (gF/U<sub>A</sub>²)<sup>2/3</sup> (SPM eq. 3-35), and the sea here grows on the lake clock.</p>
+
+          <h3>2. The spectrum</h3>
+          <p>H<sub>s</sub> and T<sub>p</sub> are spread over 72 log-spaced frequency components with a JONSWAP shape (γ = 3.3) multiplied by the TMA depth factor of Bouws et al. (1985), which removes long-wave energy the depth cannot support. Each component gets a fixed random phase, so the surface is a realistic irregular sea rather than a single sine wave.</p>
+
+          <h3>3. Propagation over the bed: linear wave theory</h3>
+          <p>Each component keeps its frequency and solves the dispersion relation for the local wavenumber. In deep water (d &gt; L/2) the bed is invisible; in shallow water (d &lt; L/20) every wave travels at √(gd).</p>
+          <div class="eq">ω² = g k tanh(kd)&nbsp;&nbsp;&nbsp;C = ω/k&nbsp;&nbsp;&nbsp;C<sub>g</sub> = ½ (1 + 2kd / sinh 2kd) · C</div>
+          <p>Energy flux E·C<sub>g</sub> is conserved along the section, and E ∝ H², which gives the shoaling coefficient K<sub>s</sub> = √(C<sub>g,gen</sub> / C<sub>g,local</sub>). K<sub>s</sub> first dips to 0.91 (around d/L<sub>0</sub> = 0.16, where C<sub>g</sub> peaks) and then climbs steeply toward the shore.</p>
+
+          <h3>4. Breaking</h3>
+          <p>Where H<sub>s</sub> would exceed 0.6 d (individual waves break near H = 0.78 d, McCowan 1894) or the Miche steepness limit, the surplus energy is removed and stays removed; the wind rebuilds the sea downwind over an e-folding fetch of 20 km. Foam marks the breaking zone.</p>
+
+          <h3>5. Crest shape</h3>
+          <p>Real waves have sharper crests and flatter troughs than a sine. The second-order Stokes term k a² · cosh kd (2 + cosh 2kd) / (4 sinh³ kd) · cos 2θ is added per component, capped where the Ursell number H L²/d³ makes Stokes theory meaningless (shallow water, where waves become cnoidal).</p>
+
+          <h3>6. Orbits</h3>
+          <p>Water particles move in closed loops: circles that shrink exponentially with depth in deep water, ellipses that flatten toward the bed in shallow water, where the horizontal motion reaches the bottom. Semi-axes A = a cosh k(z+d)/sinh kd and B = a sinh k(z+d)/sinh kd. This is why shallow Lake Erie stirs up its own mud in a storm.</p>
+
+          <h3>7. Set-up and seiche: the lake as a whole</h3>
+          <p>The wind stress τ = ρ<sub>air</sub> C<sub>D</sub> U<sub>10</sub>² (C<sub>D</sub> from Wu 1982) tilts the surface until the pressure gradient balances it, with slope dη/dx = τ / (ρ g h): three times steeper over the 8 m western basin of Erie than over the 24 m central basin, and almost flat over Superior. The model integrates the one-dimensional shallow-water equations on a staggered grid with quadratic bottom friction:</p>
+          <div class="eq">∂η/∂t = −(1/b) ∂(b h u)/∂x&nbsp;&nbsp;&nbsp;&nbsp;∂u/∂t = −g ∂η/∂x + τ/(ρ h) − C<sub>f</sub> |u| u / h</div>
+          <p>Change the wind and the tilted surface overshoots and rings as a seiche whose period the model produces on its own. The estimate shown is T<sub>1</sub> = 2 ∫ dx / √(g h), which reduces to Merian's 2L/√(gh) for a uniform basin; Erie's observed fundamental is about 14.3 h.</p>
+
+          <h3>Limits of a 1-D section</h3>
+          <ul>
+            <li>No refraction, no directional spreading, no islands: the real wave field is two-dimensional.</li>
+            <li>Plan-view width enters only the continuity equation. The funnelling that concentrates storm surge at Buffalo is a 2-D effect this model cannot reproduce.</li>
+            <li>The SMB curves are empirical; the Coastal Engineering Manual (2002) prefers friction-velocity scaling for deep water. The depth-limited form used here remains the standard quick method for lakes.</li>
+            <li>Profiles are rounded from NOAA Great Lakes bathymetry along the long axis, so they run deeper than each lake's area-mean depth.</li>
+          </ul>
+        </details>
+      </section>
+    </main>
+  </div>
+</div>
+<div class="tip" id="tip" hidden></div>
+<script type="module" src="./src/main.js"></script>
+</body>
+</html>
