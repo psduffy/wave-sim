@@ -15,6 +15,14 @@
 //    heuristic regrowth length so the wind can rebuild the sea past a sill.
 //  • Components are summed linearly; the optional second-order crest
 //    sharpening is applied per component and ignores cross terms.
+//  • The phase of each component is integrated over the still-water depth.
+//    Wind set-up changes the depth by centimetres, which would shift the
+//    phase by hundreds of radians over a 400 km integration path if it were
+//    included; a real wave train does not jump like that, its phase is
+//    continuous in time and the local wavelength adjusts slowly.
+//
+// Performance: k, Cg and the Stokes coefficient of every component are
+// tabulated against log(depth) once; the marches then only interpolate.
 
 import {
   G, TWO_PI, wavenumber, groupFactor, jonswapShape, tmaFactor, frequencyBins,
@@ -24,6 +32,10 @@ import {
 const REGROW_LENGTH = 20e3;   // m, e-folding fetch for the sea to recover after breaking
 const DRY_DEPTH = 0.3;        // m
 const STOKES_CAP = 0.3;       // max second-harmonic / first-harmonic amplitude ratio
+const LUT_N = 256;
+const LUT_MIN = Math.log(0.05);
+const LUT_MAX = Math.log(3000);
+const LUT_STEP = (LUT_MAX - LUT_MIN) / (LUT_N - 1);
 
 export class WaveField {
   constructor({ nComp = 64, fMin = 0.04, fMax = 0.8, seed = 12345 } = {}) {
@@ -40,45 +52,69 @@ export class WaveField {
     }
     this.buildLookup();
     this.coarse = null;
+    this.fine = null;
   }
 
-  /** k(d) lookup per component on a log-depth grid; interpolated in log d. */
+  /** k(d), Cg(d) and the Stokes coefficient per component on a log-depth grid. */
   buildLookup() {
-    const nd = 240;
-    this.lutMin = Math.log(0.05);
-    this.lutMax = Math.log(3000);
-    this.lutStep = (this.lutMax - this.lutMin) / (nd - 1);
-    this.lut = new Float64Array(this.nComp * nd);
-    this.lutN = nd;
-    for (let i = 0; i < this.nComp; i++) {
-      for (let j = 0; j < nd; j++) {
-        const d = Math.exp(this.lutMin + j * this.lutStep);
-        this.lut[i * nd + j] = wavenumber(this.omega[i], d);
+    const N = this.nComp;
+    this.kLut = new Float64Array(N * LUT_N);
+    this.cgLut = new Float64Array(N * LUT_N);
+    this.c2Lut = new Float64Array(N * LUT_N);
+    for (let i = 0; i < N; i++) {
+      for (let j = 0; j < LUT_N; j++) {
+        const d = Math.exp(LUT_MIN + j * LUT_STEP);
+        const k = wavenumber(this.omega[i], d);
+        const idx = i * LUT_N + j;
+        this.kLut[idx] = k;
+        this.cgLut[idx] = (groupFactor(k * d) * this.omega[i]) / k;
+        this.c2Lut[idx] = stokes2Coefficient(k * d);
       }
     }
   }
 
-  kOf(i, d) {
-    if (d <= 0.05) d = 0.05;
-    if (d >= 3000) return (this.omega[i] * this.omega[i]) / G;
-    const p = (Math.log(d) - this.lutMin) / this.lutStep;
-    const j = Math.floor(p);
+  /** Fractional table position for depth d (clamped to the table). */
+  static depthIndex(d) {
+    if (!(d > 0.05)) return 0;
+    const p = (Math.log(d) - LUT_MIN) / LUT_STEP;
+    return p >= LUT_N - 1 ? LUT_N - 1 - 1e-9 : p;
+  }
+
+  lookup(table, i, p) {
+    const j = p | 0;
     const t = p - j;
-    const base = i * this.lutN;
-    return this.lut[base + j] * (1 - t) + this.lut[base + j + 1] * t;
+    const base = i * LUT_N + j;
+    return table[base] * (1 - t) + table[base + 1] * t;
   }
 
-  cgOf(i, d) {
-    const k = this.kOf(i, d);
-    return (groupFactor(k * d) * this.omega[i]) / k;
-  }
+  kAt(i, p) { return this.lookup(this.kLut, i, p); }
+  cgAt(i, p) { return this.lookup(this.cgLut, i, p); }
+  c2At(i, p) { return this.lookup(this.c2Lut, i, p); }
 
-  /** Spectral weights (unnormalised energy per bin) for a sea of peak period Tp at depth d. */
+  /**
+   * Spectral weights (unnormalised energy per bin) for a sea of peak period
+   * Tp at depth d: JONSWAP × TMA × bin width, written out with the
+   * per-component powers precomputed (same result as jonswapShape/tmaFactor).
+   */
   weights(Tp, dEff, out) {
+    if (!this.fm4) {
+      this.fm4 = Float64Array.from(this.f, (v) => Math.pow(v, -4));
+      this.fm5df = Float64Array.from(this.f, (v, i) => Math.pow(v, -5) * this.df[i]);
+    }
     const fp = 1 / Tp;
+    const fp4 = fp * fp * fp * fp;
+    const whScale = TWO_PI * Math.sqrt(dEff / G);
+    const lnGamma = Math.log(3.3);
     let m0 = 0;
     for (let i = 0; i < this.nComp; i++) {
-      const w = jonswapShape(this.f[i], fp) * tmaFactor(this.f[i], dEff) * this.df[i];
+      const fi = this.f[i];
+      const sigma = fi <= fp ? 0.07 : 0.09;
+      const dfp = (fi - fp) / (sigma * fp);
+      const r = Math.exp(-0.5 * dfp * dfp);
+      let w = this.fm5df[i] * Math.exp(-1.25 * fp4 * this.fm4[i] + lnGamma * r);
+      const wh = fi * whScale;
+      if (wh <= 1) w *= 0.5 * wh * wh;
+      else if (wh < 2) w *= 1 - 0.5 * (2 - wh) * (2 - wh);
       out[i] = w;
       m0 += w;
     }
@@ -93,32 +129,41 @@ export class WaveField {
    *   dir:    +1 wind toward +x, −1 toward −x
    *   fetchCap: duration-limited fetch (m) — Infinity if fully developed
    *   opts:   { shoaling, breaking }
+   * The phase table is rebuilt only when the bed, the grid or the direction
+   * changed (it depends on nothing else).
    */
   computeCoarse(depths, dx, setup, UA, dir, fetchCap, opts) {
     const M = depths.length;
     const N = this.nComp;
     const c = this.coarse && this.coarse.M === M ? this.coarse : this.allocCoarse(M);
+    const phaseDirty = c.dx !== dx || c.dir !== dir || !c.hasPhase || !sameDepths(c.still, depths);
     c.dx = dx;
     c.dir = dir;
-    const { d, fetch, dEff, HsGen, Tp, Hs, phi, breaking, ampGen, Phi, Lp } = c;
+    const { d, still, pStill, pTot, fetch, dEff, HsGen, Tp, Hs, phi, breaking, ampGen, Phi, Lp } = c;
     const w = c.scratch;
 
-    for (let j = 0; j < M; j++) d[j] = depths[j] + (setup ? setup[j] : 0);
+    for (let j = 0; j < M; j++) {
+      still[j] = depths[j];
+      d[j] = depths[j] + (setup ? setup[j] : 0);
+      pStill[j] = WaveField.depthIndex(still[j]);
+      pTot[j] = WaveField.depthIndex(d[j]);
+    }
 
     let sumDepth = 0;
     let wet = 0;
     let phiMem = 1;
     const start = dir > 0 ? 0 : M - 1;
     const stop = dir > 0 ? M : -1;
+    const upwindShore = dir > 0 ? 0 : (M - 1) * dx;
     for (let j = start; j !== stop; j += dir) {
       const dj = d[j];
       const isWet = dj > DRY_DEPTH;
-      const upwindShore = dir > 0 ? 0 : (M - 1) * dx;
       const F = Math.abs(j * dx - upwindShore);
       fetch[j] = F;
       if (isWet) { sumDepth += dj; wet++; }
       const de = wet > 0 ? sumDepth / wet : Math.max(DRY_DEPTH, dj);
       dEff[j] = de;
+      const pEff = WaveField.depthIndex(de);
 
       const Feff = Math.min(F, fetchCap);
       const sea = smbShallow(UA, Feff, de);
@@ -133,9 +178,10 @@ export class WaveField {
 
       // transform to the local depth
       let e = 0;
+      const pj = pTot[j];
       for (let i = 0; i < N; i++) {
         let a = ampGen[i * M + j];
-        if (a > 0 && opts.shoaling) a *= Math.sqrt(this.cgOf(i, de) / this.cgOf(i, dj));
+        if (a > 0 && opts.shoaling) a *= Math.sqrt(this.cgAt(i, pEff) / this.cgAt(i, pj));
         a *= phiMem;
         w[i] = isWet ? a : 0;
         e += w[i] * w[i];
@@ -157,19 +203,23 @@ export class WaveField {
       phi[j] = phiMem;
       breaking[j] = brk;
       phiMem += (1 - phiMem) * (1 - Math.exp(-dx / REGROW_LENGTH));
+    }
 
-      // phase: cumulative ∫k dx in the propagation direction
-      const prev = j - dir;
-      for (let i = 0; i < N; i++) {
-        const kHere = isWet ? this.kOf(i, dj) : 0;
-        if (prev === start - dir) {
-          Phi[i * M + j] = 0;
-        } else {
-          const dprev = d[prev];
-          const kPrev = dprev > DRY_DEPTH ? this.kOf(i, dprev) : 0;
+    if (phaseDirty) {
+      // cumulative ∫k dx in the propagation direction, over still water
+      for (let j = start; j !== stop; j += dir) {
+        const prev = j - dir;
+        const wetHere = still[j] > DRY_DEPTH;
+        if (j === start) { for (let i = 0; i < N; i++) Phi[i * M + j] = 0; continue; }
+        const wetPrev = still[prev] > DRY_DEPTH;
+        for (let i = 0; i < N; i++) {
+          const kHere = wetHere ? this.kAt(i, pStill[j]) : 0;
+          const kPrev = wetPrev ? this.kAt(i, pStill[prev]) : 0;
           Phi[i * M + j] = Phi[i * M + prev] + 0.5 * (kHere + kPrev) * dx;
         }
       }
+      c.hasPhase = true;
+      c.phaseVersion++;
     }
     this.coarse = c;
     return c;
@@ -178,8 +228,9 @@ export class WaveField {
   allocCoarse(M) {
     const N = this.nComp;
     return {
-      M,
-      d: new Float64Array(M), fetch: new Float64Array(M), dEff: new Float64Array(M),
+      M, dx: 0, dir: 0, hasPhase: false, phaseVersion: 0,
+      d: new Float64Array(M), still: new Float64Array(M), pStill: new Float64Array(M), pTot: new Float64Array(M),
+      fetch: new Float64Array(M), dEff: new Float64Array(M),
       HsGen: new Float64Array(M), Tp: new Float64Array(M), Hs: new Float64Array(M),
       phi: new Float64Array(M), breaking: new Uint8Array(M), Lp: new Float64Array(M),
       ampGen: new Float64Array(N * M), Phi: new Float64Array(N * M),
@@ -199,14 +250,22 @@ export class WaveField {
   /**
    * Fine field for a window [x0, x1] sampled at n points.
    *   depthAt(x): still-water depth; setupAt(x): mean level (may be null)
+   *   blend: keep the previous amplitude tables so surface() can fade from
+   *          them to the new ones (false → the new tables replace both)
    * Returns per-point arrays and per-component amplitude/phase tables.
    */
-  computeFine(x0, x1, n, depthAt, setupAt, opts) {
+  computeFine(x0, x1, n, depthAt, setupAt, opts, blend = true) {
     const c = this.coarse;
     const N = this.nComp;
     const f = this.fine && this.fine.n === n ? this.fine : this.allocFine(n);
+    const sameWindow = f.x0 === x0 && f.x1 === x1 && f.phaseVersion === c.phaseVersion;
+    const canBlend = blend && sameWindow && f.valid;
+    // the tables just computed become "previous"; write the new ones into the other buffer
+    [f.amp, f.ampPrev] = [f.ampPrev, f.amp];
+    [f.amp2, f.amp2Prev] = [f.amp2Prev, f.amp2];
+    [f.eta0, f.eta0Prev] = [f.eta0Prev, f.eta0];
     f.x0 = x0; f.x1 = x1;
-    const { x, d, eta0, Hs, Tp, breaking, dEff, amp, amp2, Phi, k } = f;
+    const { x, d, eta0, Hs, Tp, breaking, dEff, amp, amp2, Phi, k, pStill } = f;
     const dxf = (x1 - x0) / (n - 1);
     const dir = c.dir;
     const w = c.scratch;
@@ -214,7 +273,9 @@ export class WaveField {
     for (let p = 0; p < n; p++) {
       x[p] = x0 + p * dxf;
       eta0[p] = setupAt ? setupAt(x[p]) : 0;
-      d[p] = depthAt(x[p]) + eta0[p];
+      const still = depthAt(x[p]);
+      d[p] = still + eta0[p];
+      pStill[p] = WaveField.depthIndex(still);
       dEff[p] = this.coarseAt(c.dEff, x[p]);
       Tp[p] = this.coarseAt(c.Tp, x[p]);
     }
@@ -224,7 +285,8 @@ export class WaveField {
       const dj = d[p];
       const isWet = dj > DRY_DEPTH;
       const phiMem = this.coarseAt(c.phi, x[p]);
-      const de = dEff[p];
+      const pEff = WaveField.depthIndex(dEff[p]);
+      const pj = WaveField.depthIndex(dj);
       const pc = x[p] / c.dx;
       const j0 = Math.max(0, Math.min(c.M - 2, Math.floor(pc)));
       const t = Math.max(0, Math.min(1, pc - j0));
@@ -232,7 +294,7 @@ export class WaveField {
       for (let i = 0; i < N; i++) {
         let a = c.ampGen[i * c.M + j0] * (1 - t) + c.ampGen[i * c.M + j0 + 1] * t;
         if (isWet) {
-          if (a > 0 && opts.shoaling) a *= Math.sqrt(this.cgOf(i, de) / this.cgOf(i, dj));
+          if (a > 0 && opts.shoaling) a *= Math.sqrt(this.cgAt(i, pEff) / this.cgAt(i, pj));
           a *= phiMem;
         } else a = 0;
         w[i] = a;
@@ -254,41 +316,50 @@ export class WaveField {
       breaking[p] = brk;
       for (let i = 0; i < N; i++) {
         const idx = i * n + p;
-        const ki = isWet ? this.kOf(i, dj) : 0;
+        const ki = isWet ? this.kAt(i, pj) : 0;
         k[idx] = ki;
         amp[idx] = w[i];
         let a2 = 0;
         if (opts.nonlinear && w[i] > 0 && isWet) {
-          const ratio = Math.min(STOKES_CAP, ki * w[i] * stokes2Coefficient(ki * dj));
+          const ratio = Math.min(STOKES_CAP, ki * w[i] * this.c2At(i, pj));
           a2 = ratio * w[i];
         }
         amp2[idx] = a2;
       }
     }
 
-    // phase: start from the nearest coarse node on the upwind side of the window
-    const jRef = dir > 0 ? Math.max(0, Math.floor(x0 / c.dx)) : Math.min(c.M - 1, Math.ceil(x1 / c.dx));
-    const xRef = jRef * c.dx;
-    const pStart = dir > 0 ? 0 : n - 1;
-    const gap = Math.abs(x[pStart] - xRef);
-    const nGap = 24;
-    for (let i = 0; i < N; i++) {
-      // bridge the gap between the reference node and the window edge
-      let acc = c.Phi[i * c.M + jRef];
-      let kPrev = this.kOf(i, Math.max(DRY_DEPTH, c.d[jRef]));
-      for (let s = 1; s <= nGap; s++) {
-        const xs = xRef + dir * (gap * s) / nGap;
-        const ds = depthAt(xs) + (setupAt ? setupAt(xs) : 0);
-        const ks = ds > DRY_DEPTH ? this.kOf(i, ds) : 0;
-        acc += 0.5 * (kPrev + ks) * (gap / nGap);
-        kPrev = ks;
+    // phase: from the nearest coarse node on the upwind side, over still water
+    if (!sameWindow) {
+      const jRef = dir > 0 ? Math.max(0, Math.floor(x0 / c.dx)) : Math.min(c.M - 1, Math.ceil(x1 / c.dx));
+      const xRef = jRef * c.dx;
+      const pStart = dir > 0 ? 0 : n - 1;
+      const gap = Math.abs(x[pStart] - xRef);
+      const nGap = 24;
+      const gapP = new Float64Array(nGap + 1);
+      for (let s = 0; s <= nGap; s++) gapP[s] = WaveField.depthIndex(depthAt(xRef + dir * (gap * s) / nGap));
+      for (let i = 0; i < N; i++) {
+        let acc = c.Phi[i * c.M + jRef];
+        let kPrev = this.kAt(i, gapP[0]);
+        for (let s = 1; s <= nGap; s++) {
+          const ks = this.kAt(i, gapP[s]);
+          acc += 0.5 * (kPrev + ks) * (gap / nGap);
+          kPrev = ks;
+        }
+        Phi[i * n + pStart] = acc;
+        for (let p = pStart + dir; p >= 0 && p < n; p += dir) {
+          const prev = p - dir;
+          Phi[i * n + p] = Phi[i * n + prev] + 0.5 * (this.kAt(i, pStill[p]) + this.kAt(i, pStill[prev])) * dxf;
+        }
       }
-      Phi[i * n + pStart] = acc;
-      for (let p = pStart + dir; p >= 0 && p < n; p += dir) {
-        const prev = p - dir;
-        Phi[i * n + p] = Phi[i * n + prev] + 0.5 * (k[i * n + p] + k[i * n + prev]) * dxf;
-      }
+      f.phaseVersion = c.phaseVersion;
     }
+
+    if (!canBlend) {
+      f.ampPrev.set(amp);
+      f.amp2Prev.set(amp2);
+      f.eta0Prev.set(eta0);
+    }
+    f.valid = true;
     this.fine = f;
     return f;
   }
@@ -296,30 +367,38 @@ export class WaveField {
   allocFine(n) {
     const N = this.nComp;
     return {
-      n,
-      x: new Float64Array(n), d: new Float64Array(n), eta0: new Float64Array(n),
+      n, x0: NaN, x1: NaN, valid: false, phaseVersion: -1,
+      x: new Float64Array(n), d: new Float64Array(n), pStill: new Float64Array(n),
+      eta0: new Float64Array(n), eta0Prev: new Float64Array(n),
       Hs: new Float64Array(n), Tp: new Float64Array(n), breaking: new Uint8Array(n),
       dEff: new Float64Array(n),
-      amp: new Float64Array(N * n), amp2: new Float64Array(N * n),
+      amp: new Float64Array(N * n), ampPrev: new Float64Array(N * n),
+      amp2: new Float64Array(N * n), amp2Prev: new Float64Array(N * n),
       Phi: new Float64Array(N * n), k: new Float64Array(N * n),
       eta: new Float64Array(n),
     };
   }
 
-  /** Surface elevation (relative to still water, including set-up) at time t. */
-  surface(t) {
+  /**
+   * Surface elevation (relative to still water, including set-up) at time t.
+   * blendW in [0, 1] fades from the previous amplitude tables (0) to the
+   * current ones (1), so a rebuild never shows as a step.
+   */
+  surface(t, blendW = 1) {
     const f = this.fine;
-    const { n, amp, amp2, Phi, eta, eta0 } = f;
+    const { n, amp, ampPrev, amp2, amp2Prev, Phi, eta, eta0, eta0Prev } = f;
     const N = this.nComp;
-    for (let p = 0; p < n; p++) eta[p] = eta0[p];
+    const wB = Math.max(0, Math.min(1, blendW));
+    const wA = 1 - wB;
+    for (let p = 0; p < n; p++) eta[p] = eta0Prev[p] * wA + eta0[p] * wB;
     for (let i = 0; i < N; i++) {
       const wt = this.omega[i] * t - this.phase0[i];
       const base = i * n;
       for (let p = 0; p < n; p++) {
-        const a = amp[base + p];
+        const a = ampPrev[base + p] * wA + amp[base + p] * wB;
         if (a === 0) continue;
         const cs = Math.cos(Phi[base + p] - wt);
-        eta[p] += a * cs + amp2[base + p] * (2 * cs * cs - 1);
+        eta[p] += a * cs + (amp2Prev[base + p] * wA + amp2[base + p] * wB) * (2 * cs * cs - 1);
       }
     }
     return eta;
@@ -329,17 +408,19 @@ export class WaveField {
    * Orbital displacement of a water particle whose rest position is (x, z)
    * (z negative down from still water) at time t — sum over components.
    */
-  particleDisplacement(p, z, t) {
+  particleDisplacement(p, z, t, blendW = 1) {
     const f = this.fine;
-    const { n, amp, Phi, k, d } = f;
+    const { n, amp, ampPrev, Phi, k, d } = f;
     const N = this.nComp;
+    const wB = Math.max(0, Math.min(1, blendW));
+    const wA = 1 - wB;
     let dx = 0;
     let dz = 0;
     const depth = d[p];
     const zz = Math.max(-depth, Math.min(0, z));
     for (let i = 0; i < N; i++) {
       const idx = i * n + p;
-      const a = amp[idx];
+      const a = ampPrev[idx] * wA + amp[idx] * wB;
       if (a === 0) continue;
       const ki = k[idx];
       const kd = ki * depth;
@@ -359,4 +440,10 @@ export class WaveField {
     }
     return { dx, dz };
   }
+}
+
+function sameDepths(a, b) {
+  if (a.length !== b.length) return false;
+  for (let j = 0; j < a.length; j++) if (a[j] !== b[j]) return false;
+  return true;
 }

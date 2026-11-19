@@ -92,6 +92,7 @@ function buildModels({ keepWater }) {
   }
   state.win.center = Math.max(state.win.width / 2, Math.min(L - state.win.width / 2, state.win.center));
   dirty = true;
+  jump = true;
 }
 
 function buildCompare() {
@@ -150,21 +151,52 @@ function advanceSea(dt) {
 
 function levelAt(x) { return state.opts.setup ? slow.levelAt(x) : 0; }
 
-function recompute() {
-  const { opts, sea, dir, win } = state;
+// Rebuild scheduling.  The field is rebuilt in two halves on separate frames
+// (coarse march, then the window) so no single frame carries both, and the
+// window's amplitude tables fade from the previous rebuild to the new one
+// over the rebuild interval, so the sea evolves continuously between them.
+const REBUILD_S = 0.4;
+let jump = true;            // next fine rebuild replaces the tables outright (bed/direction/option change)
+let coarseAt = -1;
+let fineAt = -1;
+let fineInterval = REBUILD_S;
+let pendingFine = false;
+
+function rebuildCoarse(nowS) {
+  const { opts, sea, dir } = state;
   let setup = null;
   if (opts.setup) {
     for (let j = 0; j < M_COARSE; j++) setupScratch[j] = slow.levelAt(j * coarseDx);
     setup = setupScratch;
   }
   wf.computeCoarse(coarseDepths, coarseDx, setup, sea.UAeff, dir, sea.Fstate, opts);
+  updateCompare();
+  coarseAt = nowS;
+  pendingFine = true;
+}
+
+function rebuildFine(nowS, blend) {
+  const { opts, win } = state;
   const n = Math.max(200, Math.min(1400, Math.round(zc.clientWidth || 800)));
   const x0 = win.center - win.width / 2;
   const x1 = win.center + win.width / 2;
-  wf.computeFine(x0, x1, n, depthAt, opts.setup ? (x) => slow.levelAt(x) : null, opts);
-  updateCompare();
+  wf.computeFine(x0, x1, n, depthAt, opts.setup ? (x) => slow.levelAt(x) : null, opts, blend);
+  fineInterval = fineAt < 0 ? REBUILD_S : Math.max(0.05, Math.min(1, nowS - fineAt));
+  fineAt = nowS;
+  pendingFine = false;
   const key = `${x0}|${x1}|${n}|${state.exag}`;
   if (key !== particleKey) { particleKey = key; buildParticles(); }
+}
+
+/** Full rebuild right now (user action). */
+function recompute(nowS = performance.now() / 1000) {
+  rebuildCoarse(nowS);
+  rebuildFine(nowS, !jump);
+  jump = false;
+}
+
+function blendWeight(nowS) {
+  return fineAt < 0 ? 1 : Math.min(1, (nowS - fineAt) / fineInterval);
 }
 
 // ---------------------------------------------------------------------------
@@ -191,9 +223,9 @@ function buildParticles() {
   }
 }
 
-function updateParticles(t) {
+function updateParticles(t, blendW) {
   for (const pt of particles) {
-    const { dx, dz } = wf.particleDisplacement(pt.p, pt.z, t);
+    const { dx, dz } = wf.particleDisplacement(pt.p, pt.z, t, blendW);
     pt.cur = [pt.xRest + dx, pt.z + dz];
     if (t - pt.lastPush >= 0.1 || t < pt.lastPush) {
       pt.lastPush = t;
@@ -264,6 +296,7 @@ function setupControls() {
       state.dir = +b.dataset.dir;
       for (const o of $('dirSeg').querySelectorAll('button')) o.classList.toggle('on', o === b);
       dirty = true;
+      jump = true;
       refreshLabels();
     });
   }
@@ -311,6 +344,7 @@ function setupControls() {
       state.opts[key] = el.checked;
       if (key === 'setup' && el.checked) slow.reset(equilibriumSetup(slow.d, slowDx, windTau(), 3, slow.b));
       dirty = true;
+      jump = true;
     });
   };
   bind('optShoaling', 'shoaling');
@@ -683,9 +717,9 @@ function renderGauges() {
 // ---------------------------------------------------------------------------
 
 let lastNow = performance.now();
-let sinceRecompute = 0;
 
 function frame(now) {
+  const nowS = now / 1000;
   const dtReal = Math.min(0.1, Math.max(0, (now - lastNow) / 1000));
   lastNow = now;
   frameNo++;
@@ -696,12 +730,14 @@ function frame(now) {
     if (state.opts.setup) slow.step(dtL, windTau());
     state.lakeTime += dtL;
   }
-  sinceRecompute += dtReal;
-  if (dirty || (state.lakeRate > 0 && sinceRecompute > 0.25)) {
-    recompute();
-    sinceRecompute = 0;
+  if (dirty && nowS - fineAt >= 0.08) {
+    recompute(nowS);
     dirty = false;
+  } else if (state.lakeRate > 0) {
+    if (pendingFine) rebuildFine(nowS, true);
+    else if (nowS - coarseAt >= REBUILD_S) rebuildCoarse(nowS);
   }
+  const blendW = blendWeight(nowS);
 
   // overview
   {
@@ -716,8 +752,8 @@ function frame(now) {
   // zoom
   {
     const { ctx, W, H } = fitCanvas(zc);
-    const eta = wf.surface(state.waveTime);
-    if (state.opts.orbits) updateParticles(state.waveTime);
+    const eta = wf.surface(state.waveTime, blendW);
+    if (state.opts.orbits) updateParticles(state.waveTime, blendW);
     const s = windowCenterStats();
     drawZoom(ctx, W, H, {
       fine: wf.fine, eta, win: state.win, exag: state.exag, particles, dir: state.dir, U10: state.U10,
@@ -746,6 +782,7 @@ function boot() {
   new MutationObserver(refreshPal).observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
   new ResizeObserver(() => { dirty = true; }).observe(zc);
   recompute();
+  dirty = false;
   updateReadouts();
   updateWhy();
   requestAnimationFrame(frame);
