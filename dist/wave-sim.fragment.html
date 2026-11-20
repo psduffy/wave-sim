@@ -1812,6 +1812,36 @@ function drawOverview(ctx, W, H, v, pal) {
   ctx.strokeStyle = pal.fg;
   ctx.lineWidth = 1.25;
   ctx.stroke();
+  // exposed lakebed: columns where the wind has left only the film on a bed that is normally under water
+  {
+    let runStart = -1;
+    const spans = [];
+    for (let c = 0; c <= cols + 1; c++) {
+      const xm = (Math.min(c, cols) / cols) * L;
+      const still = depthAt(xm);
+      const dry = c <= cols && still > 1.5 && still + etas[c] <= 1.0;
+      if (dry && runStart < 0) runStart = c;
+      if (!dry && runStart >= 0) { spans.push([runStart, c - 1]); runStart = -1; }
+    }
+    for (const [a, b] of spans) {
+      if (b - a < 2) continue;
+      ctx.beginPath();
+      for (let c = a; c <= b; c++) { if (c === a) ctx.moveTo(xs[c], bedY[c] - 1); else ctx.lineTo(xs[c], bedY[c] - 1); }
+      ctx.strokeStyle = pal.foam;
+      ctx.globalAlpha = 0.7;
+      ctx.lineWidth = 3;
+      ctx.stroke();
+      ctx.globalAlpha = 1;
+      if (b - a > 60) {
+        ctx.font = `11px ${pal.mono}`;
+        ctx.fillStyle = pal.fg;
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'top';
+        ctx.fillText('lakebed exposed by the wind', (xs[a] + xs[b]) / 2, bedY[Math.floor((a + b) / 2)] + 6);
+      }
+    }
+  }
+
   // breaking zones on the surface
   ctx.strokeStyle = pal.breaking;
   ctx.lineWidth = 2;
@@ -2026,6 +2056,47 @@ function drawZoom(ctx, W, H, v, pal) {
   ctx.lineWidth = 2;
   ctx.stroke();
 
+  // HUD text is composed here so that other labels can keep clear of its box
+  const pc = Math.floor(n / 2);
+  const from = dir > 0 ? ends[0] : ends[1];
+  const dist = dir > 0 ? center : L - center;
+  const dc = fine.d[pc];
+  const stillC = dc - fine.eta0[pc];
+  const blownDry = opts.setup && dc <= 1.0 && stillC > 1.5;
+  const hud = [
+    { text: `${fmt(center / 1e3, 1)} km from ${ends[0]}  ·  fetch ${fmt(dist / 1e3, 0)} km from ${from}`, font: `600 12px ${pal.sans}`, color: pal.fg },
+    { text: `depth ${fmt(dc, 1)} m   Hs ${fmt(fine.Hs[pc], 2)} m   Tp ${fmt(fine.Tp[pc], 1)} s   L ${fmt(v.Lp, 0)} m`, font: `11px ${pal.mono}`, color: pal.muted },
+  ];
+  if (v.vessel) {
+    const { def, pose } = v.vessel;
+    let line = `${def.name} · draft ${def.draft} m`;
+    let color = pal.muted;
+    if (pose.aground) {
+      line += ` · AGROUND, ${fmt(def.draft + pose.waterUnderKeel, 1)} m of water`;
+      color = pal.breaking;
+    } else if (v.Lp > 0) {
+      line += ` · ${fmt(def.LOA / v.Lp, 1)} wavelengths along the hull · pitch ${fmt((pose.pitch * 180) / Math.PI, 1)}° · heave ${pose.heave >= 0 ? '+' : ''}${fmt(pose.heave, 1)} m`;
+    }
+    hud.push({ text: line, font: `11px ${pal.mono}`, color });
+  }
+  // wrap lines that do not fit the canvas at their " · " separators
+  const hudLines = [];
+  for (const h of hud) {
+    ctx.font = h.font;
+    if (ctx.measureText(h.text).width <= W - 28) { hudLines.push(h); continue; }
+    const parts = h.text.split(' · ');
+    let cur = '';
+    for (const part of parts) {
+      const trial = cur ? `${cur} · ${part}` : part;
+      if (cur && ctx.measureText(trial).width > W - 28) { hudLines.push({ ...h, text: cur }); cur = part; } else cur = trial;
+    }
+    if (cur) hudLines.push({ ...h, text: cur });
+  }
+  let hudW = 0;
+  for (const h of hudLines) { ctx.font = h.font; hudW = Math.max(hudW, ctx.measureText(h.text).width); }
+  const hudH = 8 + hudLines.length * 15 + 2;
+  const hudBottom = 4 + hudH;
+
   // local mean level (the frame's reference) and the still-water datum
   ctx.setLineDash([4, 4]);
   ctx.lineWidth = 1;
@@ -2041,13 +2112,17 @@ function drawZoom(ctx, W, H, v, pal) {
     ctx.moveTo(0, yStill + 0.5);
     ctx.lineTo(W, yStill + 0.5);
     ctx.stroke();
-    if (yStill > 0 && yStill < H) {
-      ctx.setLineDash([]);
+    ctx.setLineDash([]);
+    if (yStill > -4 && yStill < H + 4) {
       ctx.font = `11px ${pal.mono}`;
       ctx.fillStyle = pal.wind;
       ctx.textAlign = 'right';
-      ctx.textBaseline = yStill > g.yWater ? 'top' : 'bottom';
-      ctx.fillText(`still-water datum, ${eta0c >= 0 ? '' : '+'}${fmt(-eta0c, 1)} m from the surface here`, W - 14, yStill + (yStill > g.yWater ? 3 : -3));
+      const above = eta0c < 0;      // datum lies above the water when the wind has lowered it
+      const label = `still-water datum, ${fmt(Math.abs(eta0c), 1)} m ${above ? 'above' : 'below'} the water here`;
+      let ly = yStill + (above ? -3 : 3);
+      ctx.textBaseline = above ? 'bottom' : 'top';
+      if (ly < hudBottom + 14 && W - 14 - ctx.measureText(label).width < hudW + 20) { ly = hudBottom + 4; ctx.textBaseline = 'top'; }
+      ctx.fillText(label, W - 14, Math.max(2, Math.min(H - 2, ly)));
     }
   }
   ctx.setLineDash([]);
@@ -2137,35 +2212,48 @@ function drawZoom(ctx, W, H, v, pal) {
     ctx.fillText(`bed ${fmt(dc, 0)} m down, below this frame ↓`, W / 2, H - 18);
   }
 
-  // HUD, on a translucent backing so it stays readable over a tall ship
-  const from = dir > 0 ? ends[0] : ends[1];
-  const dist = dir > 0 ? center : L - center;
-  const dc = fine.d[Math.floor(n / 2)];
-  const hud = [
-    { text: `${fmt(center / 1e3, 1)} km from ${ends[0]}  ·  fetch ${fmt(dist / 1e3, 0)} km from ${from}`, font: `600 12px ${pal.sans}`, color: pal.fg },
-    { text: `depth ${fmt(dc, 1)} m   Hs ${fmt(fine.Hs[Math.floor(n / 2)], 2)} m   Tp ${fmt(fine.Tp[Math.floor(n / 2)], 1)} s   L ${fmt(v.Lp, 0)} m`, font: `11px ${pal.mono}`, color: pal.muted },
-  ];
-  if (v.vessel) {
-    const { def, pose } = v.vessel;
-    let line = `${def.name}: ${def.LOA} × ${def.beam} m, draft ${def.draft} m`;
-    let color = pal.muted;
-    if (pose.aground) {
-      line += `  ·  AGROUND: ${fmt(def.draft + pose.waterUnderKeel, 1)} m of water under an ${def.draft} m draft`;
-      color = pal.breaking;
-    } else if (v.Lp > 0) {
-      line += `  ·  ${fmt(def.LOA / v.Lp, 1)} wavelengths along the hull  ·  pitch ${fmt((pose.pitch * 180) / Math.PI, 1)}°  ·  heave ${pose.heave >= 0 ? '+' : ''}${fmt(pose.heave, 1)} m`;
-    }
-    hud.push({ text: line, font: `11px ${pal.mono}`, color });
+  // blown-dry banner: the bed here is normally under water and the wind has emptied it
+  if (blownDry) {
+    const lines = [
+      'Blown dry',
+      `The wind has pushed the water out of this part of the lake: ${fmt(stillC, 1)} m deep in still water, ${fmt(dc, 1)} m film left now.`,
+      'Move the window downwind to where the water has piled up, or ease the wind and watch it flow back.',
+    ];
+    ctx.font = `600 13px ${pal.sans}`;
+    let bw = ctx.measureText(lines[0]).width;
+    ctx.font = `12px ${pal.sans}`;
+    for (const l of lines.slice(1)) bw = Math.max(bw, ctx.measureText(l).width);
+    bw = Math.min(W - 24, bw + 24);
+    const bh = 70;
+    const bx = (W - bw) / 2;
+    const by = Math.min(H - bh - 30, Math.max(hudBottom + 10, g.yWater + 24));
+    ctx.fillStyle = pal.panel;
+    ctx.globalAlpha = 0.92;
+    ctx.fillRect(bx, by, bw, bh);
+    ctx.globalAlpha = 1;
+    ctx.strokeStyle = pal.breaking;
+    ctx.lineWidth = 1;
+    ctx.strokeRect(bx + 0.5, by + 0.5, bw - 1, bh - 1);
+    ctx.textAlign = 'left';
+    ctx.textBaseline = 'top';
+    ctx.fillStyle = pal.breaking;
+    ctx.font = `600 13px ${pal.sans}`;
+    ctx.fillText(lines[0], bx + 12, by + 10);
+    ctx.fillStyle = pal.fg;
+    ctx.font = `12px ${pal.sans}`;
+    ctx.fillText(lines[1], bx + 12, by + 30, bw - 24);
+    ctx.fillStyle = pal.muted;
+    ctx.fillText(lines[2], bx + 12, by + 48, bw - 24);
   }
-  let hudW = 0;
-  for (const h of hud) { ctx.font = h.font; hudW = Math.max(hudW, ctx.measureText(h.text).width); }
+
+  // HUD, on a translucent backing so it stays readable over a tall ship
   ctx.fillStyle = pal.sky;
   ctx.globalAlpha = 0.82;
-  ctx.fillRect(4, 4, hudW + 12, 8 + hud.length * 15 + 2);
+  ctx.fillRect(4, 4, hudW + 12, hudH);
   ctx.globalAlpha = 1;
   ctx.textBaseline = 'top';
   ctx.textAlign = 'left';
-  hud.forEach((h, i) => { ctx.font = h.font; ctx.fillStyle = h.color; ctx.fillText(h.text, 10, 8 + i * 15 + (i > 0 ? 3 : 0)); });
+  hudLines.forEach((h, i) => { ctx.font = h.font; ctx.fillStyle = h.color; ctx.fillText(h.text, 10, 8 + i * 15 + (i > 0 ? 3 : 0)); });
   // wind arrow
   if (U10 > 0) {
     const y = 16;
