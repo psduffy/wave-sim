@@ -351,6 +351,7 @@ function setupControls() {
   vs.addEventListener('change', () => { state.vesselId = vs.value; });
 
   $('exag').addEventListener('change', () => { state.exag = +$('exag').value; dirty = true; refreshLabels(); });
+  $('fitWaves').addEventListener('click', fitWaves);
   $('jumpUp').addEventListener('click', () => setWindowCenter(state.dir > 0 ? 1500 : L - 1500));
   $('jumpMid').addEventListener('click', () => setWindowCenter(L / 2));
   $('jumpDown').addEventListener('click', () => setWindowCenter(state.dir > 0 ? L - 1500 : 1500));
@@ -369,6 +370,13 @@ function setupControls() {
   bind('optNonlinear', 'nonlinear');
   bind('optSetup', 'setup');
   bind('optOrbits', 'orbits');
+}
+
+/** Widen or narrow the window to four peak wavelengths at its centre. */
+function fitWaves() {
+  const s = windowCenterStats();
+  if (!s.wet || !(s.Lp > 0)) return;
+  setWindowWidth(4 * s.Lp);
 }
 
 function setWindowWidth(w) {
@@ -433,8 +441,13 @@ function setupExpand() {
   });
   document.addEventListener('keydown', (e) => {
     if (e.key === 'Escape' && maxPanel) { unmaximize(); return; }
-    const tag = e.target && e.target.tagName;
-    if (tag === 'INPUT' || tag === 'SELECT' || tag === 'TEXTAREA') return;
+    const t = e.target;
+    const tag = t && t.tagName;
+    const inSlider = tag === 'INPUT' && t.type === 'range';
+    const inField = tag === 'TEXTAREA' || tag === 'SELECT' || (tag === 'INPUT' && !inSlider && t.type !== 'checkbox' && t.type !== 'button');
+    if (inField) return;
+    if ((e.key === 'f' || e.key === 'F') && !e.ctrlKey && !e.metaKey && !e.altKey) { fitWaves(); return; }
+    if (inSlider) return;                       // arrows belong to the focused slider
     const big = e.shiftKey;
     if (e.key === 'ArrowLeft' || e.key === 'ArrowRight') {
       const step = big ? 1000 : state.win.width * 0.25;
@@ -729,6 +742,10 @@ function updateWhy() {
       } else {
         p2 += ` The ${fmt(s.Tp, 1)} s waves feel the bottom: compared with deep water they have slowed from ${fmt(s.C0, 1)} to ${fmt(s.C, 1)} m/s and shortened from ${fmt(s.L0, 0)} to ${fmt(s.Lp, 0)} m. The orbits flatten into ellipses${cls === 'shallow' ? ' that reach the bed, which is why a storm stirs up the mud' : ''}.`;
         if (opts.shoaling) p2 += ` Energy flux is conserved, so the height scales by Ks = ${fmt(s.Ks, 2)} relative to the ${fmt(s.dEff, 0)} m water it grew in.`;
+      }
+      const wavesInWindow = state.win.width / s.Lp;
+      if (wavesInWindow < 2) {
+        p2 += ` The window is only ${fmt(wavesInWindow, 1)} wavelengths wide, so instead of waves marching past you see the whole surface heave and tilt as each ${fmt(s.Lp, 0)} m crest passes; the short chop on top is the high-frequency part of the same wind-wave spectrum. Press F or widen the window to see several waves at once.`;
       }
       if (opts.breaking) {
         p2 += s.breaking

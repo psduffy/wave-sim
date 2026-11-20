@@ -221,6 +221,7 @@ canvas { display: block; width: 100%; border-radius: 6px; background: var(--sky)
           <button class="btn" id="jumpDown" type="button">Downwind shore</button>
         </div>
         <div class="row"><label for="winWidth">Width</label><span class="val" id="winWidthVal">400 m</span></div>
+        <div class="btn-row"><button class="btn" id="fitWaves" type="button" title="Set the window to four peak wavelengths (F)">Fit 4 waves</button></div>
         <input type="range" id="winWidth" min="0" max="100" step="1" value="30" aria-label="Window width, 100 m to 10 km">
         <div class="row"><label for="vessel">Vessel for scale</label></div>
         <div class="row"><select id="vessel" aria-label="Vessel drawn in the window"></select></div>
@@ -262,7 +263,7 @@ canvas { display: block; width: 100%; border-radius: 6px; background: var(--sky)
           <h2>Window, drawn to scale</h2>
           <div class="head-right">
             <span class="hint" id="zoomHint"></span>
-            <span class="hint">← → move · ↑ ↓ zoom · shift for big steps</span>
+            <span class="hint">← → move · ↑ ↓ zoom · F fits 4 waves · shift for big steps</span>
             <button class="btn sm" type="button" data-expand aria-pressed="false">Expand</button>
           </div>
         </div>
@@ -1478,6 +1479,7 @@ const { G, RHO_WATER } = __m.physics;
 
 const BOTTOM_DRAG = 0.0025;   // quadratic bottom-friction coefficient, typical for lakes
 const H_MIN = 0.5;            // m, the film left on a "dry" cell
+const FILTER = 0.05;                 // three-point velocity filter weight
 
 class SlowModel {
   /**
@@ -1549,14 +1551,28 @@ class SlowModel {
     const g = G;
     const inv = 1 / RHO_WATER;
     const flux = this.flux || (this.flux = new Float64Array(n - 1));
-    // momentum at faces; a face with no water on it carries no flow
+    // momentum at faces; a face with no water on it carries no flow.
+    // Bottom friction is implicit: u_new = u* / (1 + dt·C_f·|u*|/h), which is
+    // stable however thin the water or strong the current (an explicit
+    // friction term overshoots and flips the sign of u on a thin film).
     for (let f = 0; f < n - 1; f++) {
       const hf = 0.5 * (d[f] + d[f + 1] + eta[f] + eta[f + 1]);
       if (hf <= H_MIN * 1.001) { u[f] = 0; flux[f] = 0; continue; }
-      const uf = u[f];
-      const accel = -g * (eta[f + 1] - eta[f]) / dx + (tau * inv) / hf - (BOTTOM_DRAG * Math.abs(uf) * uf) / hf;
-      u[f] = uf + dt * accel;
-      flux[f] = 0.5 * (b[f] + b[f + 1]) * hf * u[f];
+      const uStar = u[f] + dt * (-g * (eta[f + 1] - eta[f]) / dx + (tau * inv) / hf);
+      u[f] = uStar / (1 + (dt * BOTTOM_DRAG * Math.abs(uStar)) / hf);
+    }
+    // a light three-point filter on u removes grid-scale noise (2Δx) while
+    // leaving basin-scale motion untouched: damping ∝ (kΔx)² per step
+    if (n > 3) {
+      const uf = this.uFilt || (this.uFilt = new Float64Array(n - 1));
+      uf[0] = u[0];
+      uf[n - 2] = u[n - 2];
+      for (let f = 1; f < n - 2; f++) uf[f] = u[f] + FILTER * (u[f - 1] - 2 * u[f] + u[f + 1]);
+      for (let f = 0; f < n - 1; f++) u[f] = uf[f];
+    }
+    for (let f = 0; f < n - 1; f++) {
+      const hf = 0.5 * (d[f] + d[f + 1] + eta[f] + eta[f + 1]);
+      flux[f] = hf <= H_MIN * 1.001 ? 0 : 0.5 * (b[f] + b[f + 1]) * hf * u[f];
     }
     // a cell may not give away more water than it has above the dry limit:
     // scale its outgoing fluxes down together, which keeps the volume exact
@@ -2067,6 +2083,9 @@ function drawZoom(ctx, W, H, v, pal) {
     { text: `${fmt(center / 1e3, 1)} km from ${ends[0]}  ·  fetch ${fmt(dist / 1e3, 0)} km from ${from}`, font: `600 12px ${pal.sans}`, color: pal.fg },
     { text: `depth ${fmt(dc, 1)} m   Hs ${fmt(fine.Hs[pc], 2)} m   Tp ${fmt(fine.Tp[pc], 1)} s   L ${fmt(v.Lp, 0)} m`, font: `11px ${pal.mono}`, color: pal.muted },
   ];
+  if (v.Lp > 0 && win.width < 2 * v.Lp && !blownDry) {
+    hud.push({ text: `window is ${fmt(win.width / v.Lp, 1)} wavelengths wide: the surface heaves and tilts as each crest passes · F fits 4 waves`, font: `11px ${pal.mono}`, color: pal.wind });
+  }
   if (v.vessel) {
     const { def, pose } = v.vessel;
     let line = `${def.name} · draft ${def.draft} m`;
@@ -2185,7 +2204,7 @@ function drawZoom(ctx, W, H, v, pal) {
   ctx.textAlign = 'left';
   ctx.textBaseline = 'middle';
   const dStep = niceStep((H - g.yWater) / g.sy, 5);
-  for (let d = 0; g.yWater + d * g.sy < H - 8; d += dStep) {
+  for (let d = 0; g.yWater + d * g.sy < H - 58; d += dStep) {
     const y = g.yWater + d * g.sy;
     ctx.beginPath();
     ctx.moveTo(0, y + 0.5);
@@ -2193,6 +2212,29 @@ function drawZoom(ctx, W, H, v, pal) {
     ctx.stroke();
     ctx.fillText(d === 0 ? '0 m, mean surface' : `-${+d.toFixed(2)} m`, 11, y);
   }
+  // one peak wavelength, bracketed above the scale bar
+  if (v.Lp > 0 && !blownDry) {
+    const y = H - 34;
+    const lpPx = v.Lp * g.sx;
+    const fits = lpPx <= W - 28;
+    const x0 = 14;
+    const x1 = fits ? x0 + lpPx : W - 14;
+    ctx.strokeStyle = pal.fg;
+    ctx.lineWidth = 1.5;
+    ctx.beginPath();
+    ctx.moveTo(x0, y);
+    ctx.lineTo(x1, y);
+    ctx.moveTo(x0 + 0.5, y - 5);
+    ctx.lineTo(x0 + 0.5, y + 5);
+    if (fits) { ctx.moveTo(x1 - 0.5, y - 5); ctx.lineTo(x1 - 0.5, y + 5); } else { ctx.moveTo(x1, y); ctx.lineTo(x1 - 7, y - 4); ctx.moveTo(x1, y); ctx.lineTo(x1 - 7, y + 4); }
+    ctx.stroke();
+    ctx.font = `11px ${pal.mono}`;
+    ctx.fillStyle = pal.fg;
+    ctx.textAlign = 'left';
+    ctx.textBaseline = 'bottom';
+    ctx.fillText(fits ? `one peak wavelength, ${fmt(v.Lp, 0)} m` : `one peak wavelength is ${fmt(v.Lp, 0)} m, wider than this window`, x0, y - 6);
+  }
+
   const barM = niceStep(win.width / 4, 1);
   const barPx = barM * g.sx;
   ctx.strokeStyle = pal.fg;
@@ -2868,6 +2910,7 @@ function setupControls() {
   vs.addEventListener('change', () => { state.vesselId = vs.value; });
 
   $('exag').addEventListener('change', () => { state.exag = +$('exag').value; dirty = true; refreshLabels(); });
+  $('fitWaves').addEventListener('click', fitWaves);
   $('jumpUp').addEventListener('click', () => setWindowCenter(state.dir > 0 ? 1500 : L - 1500));
   $('jumpMid').addEventListener('click', () => setWindowCenter(L / 2));
   $('jumpDown').addEventListener('click', () => setWindowCenter(state.dir > 0 ? L - 1500 : 1500));
@@ -2886,6 +2929,13 @@ function setupControls() {
   bind('optNonlinear', 'nonlinear');
   bind('optSetup', 'setup');
   bind('optOrbits', 'orbits');
+}
+
+/** Widen or narrow the window to four peak wavelengths at its centre. */
+function fitWaves() {
+  const s = windowCenterStats();
+  if (!s.wet || !(s.Lp > 0)) return;
+  setWindowWidth(4 * s.Lp);
 }
 
 function setWindowWidth(w) {
@@ -2950,8 +3000,13 @@ function setupExpand() {
   });
   document.addEventListener('keydown', (e) => {
     if (e.key === 'Escape' && maxPanel) { unmaximize(); return; }
-    const tag = e.target && e.target.tagName;
-    if (tag === 'INPUT' || tag === 'SELECT' || tag === 'TEXTAREA') return;
+    const t = e.target;
+    const tag = t && t.tagName;
+    const inSlider = tag === 'INPUT' && t.type === 'range';
+    const inField = tag === 'TEXTAREA' || tag === 'SELECT' || (tag === 'INPUT' && !inSlider && t.type !== 'checkbox' && t.type !== 'button');
+    if (inField) return;
+    if ((e.key === 'f' || e.key === 'F') && !e.ctrlKey && !e.metaKey && !e.altKey) { fitWaves(); return; }
+    if (inSlider) return;                       // arrows belong to the focused slider
     const big = e.shiftKey;
     if (e.key === 'ArrowLeft' || e.key === 'ArrowRight') {
       const step = big ? 1000 : state.win.width * 0.25;
@@ -3246,6 +3301,10 @@ function updateWhy() {
       } else {
         p2 += ` The ${fmt(s.Tp, 1)} s waves feel the bottom: compared with deep water they have slowed from ${fmt(s.C0, 1)} to ${fmt(s.C, 1)} m/s and shortened from ${fmt(s.L0, 0)} to ${fmt(s.Lp, 0)} m. The orbits flatten into ellipses${cls === 'shallow' ? ' that reach the bed, which is why a storm stirs up the mud' : ''}.`;
         if (opts.shoaling) p2 += ` Energy flux is conserved, so the height scales by Ks = ${fmt(s.Ks, 2)} relative to the ${fmt(s.dEff, 0)} m water it grew in.`;
+      }
+      const wavesInWindow = state.win.width / s.Lp;
+      if (wavesInWindow < 2) {
+        p2 += ` The window is only ${fmt(wavesInWindow, 1)} wavelengths wide, so instead of waves marching past you see the whole surface heave and tilt as each ${fmt(s.Lp, 0)} m crest passes; the short chop on top is the high-frequency part of the same wind-wave spectrum. Press F or widen the window to see several waves at once.`;
       }
       if (opts.breaking) {
         p2 += s.breaking

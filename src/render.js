@@ -464,6 +464,9 @@ export function drawZoom(ctx, W, H, v, pal) {
     { text: `${fmt(center / 1e3, 1)} km from ${ends[0]}  ·  fetch ${fmt(dist / 1e3, 0)} km from ${from}`, font: `600 12px ${pal.sans}`, color: pal.fg },
     { text: `depth ${fmt(dc, 1)} m   Hs ${fmt(fine.Hs[pc], 2)} m   Tp ${fmt(fine.Tp[pc], 1)} s   L ${fmt(v.Lp, 0)} m`, font: `11px ${pal.mono}`, color: pal.muted },
   ];
+  if (v.Lp > 0 && win.width < 2 * v.Lp && !blownDry) {
+    hud.push({ text: `window is ${fmt(win.width / v.Lp, 1)} wavelengths wide: the surface heaves and tilts as each crest passes · F fits 4 waves`, font: `11px ${pal.mono}`, color: pal.wind });
+  }
   if (v.vessel) {
     const { def, pose } = v.vessel;
     let line = `${def.name} · draft ${def.draft} m`;
@@ -582,7 +585,7 @@ export function drawZoom(ctx, W, H, v, pal) {
   ctx.textAlign = 'left';
   ctx.textBaseline = 'middle';
   const dStep = niceStep((H - g.yWater) / g.sy, 5);
-  for (let d = 0; g.yWater + d * g.sy < H - 8; d += dStep) {
+  for (let d = 0; g.yWater + d * g.sy < H - 58; d += dStep) {
     const y = g.yWater + d * g.sy;
     ctx.beginPath();
     ctx.moveTo(0, y + 0.5);
@@ -590,6 +593,29 @@ export function drawZoom(ctx, W, H, v, pal) {
     ctx.stroke();
     ctx.fillText(d === 0 ? '0 m, mean surface' : `-${+d.toFixed(2)} m`, 11, y);
   }
+  // one peak wavelength, bracketed above the scale bar
+  if (v.Lp > 0 && !blownDry) {
+    const y = H - 34;
+    const lpPx = v.Lp * g.sx;
+    const fits = lpPx <= W - 28;
+    const x0 = 14;
+    const x1 = fits ? x0 + lpPx : W - 14;
+    ctx.strokeStyle = pal.fg;
+    ctx.lineWidth = 1.5;
+    ctx.beginPath();
+    ctx.moveTo(x0, y);
+    ctx.lineTo(x1, y);
+    ctx.moveTo(x0 + 0.5, y - 5);
+    ctx.lineTo(x0 + 0.5, y + 5);
+    if (fits) { ctx.moveTo(x1 - 0.5, y - 5); ctx.lineTo(x1 - 0.5, y + 5); } else { ctx.moveTo(x1, y); ctx.lineTo(x1 - 7, y - 4); ctx.moveTo(x1, y); ctx.lineTo(x1 - 7, y + 4); }
+    ctx.stroke();
+    ctx.font = `11px ${pal.mono}`;
+    ctx.fillStyle = pal.fg;
+    ctx.textAlign = 'left';
+    ctx.textBaseline = 'bottom';
+    ctx.fillText(fits ? `one peak wavelength, ${fmt(v.Lp, 0)} m` : `one peak wavelength is ${fmt(v.Lp, 0)} m, wider than this window`, x0, y - 6);
+  }
+
   const barM = niceStep(win.width / 4, 1);
   const barPx = barM * g.sx;
   ctx.strokeStyle = pal.fg;

@@ -17,6 +17,7 @@ import { G, RHO_WATER } from './physics.js';
 
 export const BOTTOM_DRAG = 0.0025;   // quadratic bottom-friction coefficient, typical for lakes
 export const H_MIN = 0.5;            // m, the film left on a "dry" cell
+const FILTER = 0.05;                 // three-point velocity filter weight
 
 export class SlowModel {
   /**
@@ -88,14 +89,28 @@ export class SlowModel {
     const g = G;
     const inv = 1 / RHO_WATER;
     const flux = this.flux || (this.flux = new Float64Array(n - 1));
-    // momentum at faces; a face with no water on it carries no flow
+    // momentum at faces; a face with no water on it carries no flow.
+    // Bottom friction is implicit: u_new = u* / (1 + dt·C_f·|u*|/h), which is
+    // stable however thin the water or strong the current (an explicit
+    // friction term overshoots and flips the sign of u on a thin film).
     for (let f = 0; f < n - 1; f++) {
       const hf = 0.5 * (d[f] + d[f + 1] + eta[f] + eta[f + 1]);
       if (hf <= H_MIN * 1.001) { u[f] = 0; flux[f] = 0; continue; }
-      const uf = u[f];
-      const accel = -g * (eta[f + 1] - eta[f]) / dx + (tau * inv) / hf - (BOTTOM_DRAG * Math.abs(uf) * uf) / hf;
-      u[f] = uf + dt * accel;
-      flux[f] = 0.5 * (b[f] + b[f + 1]) * hf * u[f];
+      const uStar = u[f] + dt * (-g * (eta[f + 1] - eta[f]) / dx + (tau * inv) / hf);
+      u[f] = uStar / (1 + (dt * BOTTOM_DRAG * Math.abs(uStar)) / hf);
+    }
+    // a light three-point filter on u removes grid-scale noise (2Δx) while
+    // leaving basin-scale motion untouched: damping ∝ (kΔx)² per step
+    if (n > 3) {
+      const uf = this.uFilt || (this.uFilt = new Float64Array(n - 1));
+      uf[0] = u[0];
+      uf[n - 2] = u[n - 2];
+      for (let f = 1; f < n - 2; f++) uf[f] = u[f] + FILTER * (u[f - 1] - 2 * u[f] + u[f + 1]);
+      for (let f = 0; f < n - 1; f++) u[f] = uf[f];
+    }
+    for (let f = 0; f < n - 1; f++) {
+      const hf = 0.5 * (d[f] + d[f + 1] + eta[f] + eta[f + 1]);
+      flux[f] = hf <= H_MIN * 1.001 ? 0 : 0.5 * (b[f] + b[f + 1]) * hf * u[f];
     }
     // a cell may not give away more water than it has above the dry limit:
     // scale its outgoing fluxes down together, which keeps the volume exact
