@@ -93,7 +93,7 @@ button { cursor: pointer; }
 .group > h2 { display: flex; justify-content: space-between; align-items: baseline; font-size: 12px; letter-spacing: 0.06em; text-transform: uppercase; color: var(--muted); }
 .row { display: flex; align-items: center; justify-content: space-between; gap: 8px; min-width: 0; }
 .row label, .row .lbl { color: var(--fg); }
-.row .val { font-family: var(--font-mono); font-size: 12px; color: var(--muted); white-space: nowrap; font-variant-numeric: tabular-nums; }
+.row .val { font-family: var(--font-mono); font-size: 12px; color: var(--muted); text-align: right; font-variant-numeric: tabular-nums; }
 .row select { flex: 1 1 auto; min-width: 0; }
 input[type="range"] { width: 100%; accent-color: var(--accent); margin: 0; }
 select { background: var(--panel-2); border: 1px solid var(--line); border-radius: 6px; padding: 5px 8px; max-width: 100%; }
@@ -184,7 +184,7 @@ canvas { display: block; width: 100%; border-radius: 6px; background: var(--sky)
       <div class="group">
         <h2>Wind</h2>
         <div class="row"><label for="wind">Speed at 10 m</label><span class="val" id="windVal">15.0 m/s</span></div>
-        <input type="range" id="wind" min="0" max="30" step="0.5" value="15">
+        <input type="range" id="wind" min="0" max="100" step="0.25" value="25.43" aria-label="Wind speed, quadratic scale up to 450 knots">
         <div class="row"><span class="lbl">Blowing toward</span></div>
         <div class="seg" id="dirSeg">
           <button type="button" data-dir="-1" id="dirWest">◀ Toledo</button>
@@ -228,7 +228,7 @@ canvas { display: block; width: 100%; border-radius: 6px; background: var(--sky)
           <button class="btn" id="jumpDown" type="button">Downwind shore</button>
         </div>
         <div class="row"><label for="winWidth">Width</label><span class="val" id="winWidthVal">400 m</span></div>
-        <input type="range" id="winWidth" min="0" max="100" step="1" value="40">
+        <input type="range" id="winWidth" min="0" max="100" step="1" value="30" aria-label="Window width, 100 m to 10 km">
         <div class="row"><label for="vessel">Vessel for scale</label></div>
         <div class="row"><select id="vessel" aria-label="Vessel drawn in the window"></select></div>
         <div class="row"><label for="exag">Vertical exaggeration</label>
@@ -303,6 +303,7 @@ canvas { display: block; width: 100%; border-radius: 6px; background: var(--sky)
           <p>The wind stress factor U<sub>A</sub> = 0.71 U<sub>10</sub><sup>1.23</sup> feeds the Sverdrup–Munk–Bretschneider shallow-water growth curves (Shore Protection Manual 1984, eqs. 3-39 and 3-40). The tanh factors in d cap the growth: a shallow bed drains energy from the long waves through bottom friction and percolation, so the same wind over Lake Erie makes a lower, shorter, steeper sea than over Lake Superior.</p>
           <div class="eq">gH/U<sub>A</sub>² = 0.283 · tanh[0.530 (gd/U<sub>A</sub>²)<sup>3/4</sup>] · tanh{ 0.00565 (gF/U<sub>A</sub>²)<sup>1/2</sup> / tanh[0.530 (gd/U<sub>A</sub>²)<sup>3/4</sup>] }<br>gT/U<sub>A</sub> = 7.54 · tanh[0.833 (gd/U<sub>A</sub>²)<sup>3/8</sup>] · tanh{ 0.0379 (gF/U<sub>A</sub>²)<sup>1/3</sup> / tanh[0.833 (gd/U<sub>A</sub>²)<sup>3/8</sup>] }</div>
           <p>The generation depth d is the mean depth between the upwind shore and the point. A wind that has not blown long enough is duration-limited: the fetch it can "fill" in time t follows gt/U<sub>A</sub> = 68.8 (gF/U<sub>A</sub>²)<sup>2/3</sup> (SPM eq. 3-35), and the sea here grows on the lake clock.</p>
+          <p>The wind slider runs to 450 kn (232 m/s), about twice the strongest gust ever measured on Earth. The curves were fitted to storms below about 40 m/s; beyond that the simulator extrapolates them for fun. Two things are made safe for it: the drag coefficient is capped at 2.5 × 10⁻³, where it levels off in real hurricanes (Powell, Vickery and Reinhold 2003), and the lake model lets the upwind bed go dry rather than run out of water, so a hurricane over Erie blows the western basin empty and stacks the lake against Buffalo.</p>
 
           <h3>2. The spectrum</h3>
           <p>H<sub>s</sub> and T<sub>p</sub> are spread over 72 log-spaced frequency components with a JONSWAP shape (γ = 3.3) multiplied by the TMA depth factor of Bouws et al. (1985), which removes long-wave energy the depth cannot support. Each component gets a fixed random phase, so the surface is a realistic irregular sea rather than a single sine wave.</p>
@@ -464,8 +465,34 @@ function orbitalSemiAxes(a, k, d, z) {
 /** Wind-stress factor U_A = 0.71 U10^1.23 (U10 in m/s).  [SPM eq. 3-28a] */
 function windStressFactor(U10) { return U10 > 0 ? 0.71 * Math.pow(U10, 1.23) : 0; }
 
-/** Drag coefficient C_D = (0.8 + 0.065 U10)·10⁻³.  [WU] */
-function dragCoefficient(U10) { return (0.8 + 0.065 * U10) * 1e-3; }
+/**
+ * Drag coefficient C_D = (0.8 + 0.065 U10)·10⁻³ [WU], capped at 2.5·10⁻³:
+ * in hurricane winds the sea surface stops getting rougher and C_D levels
+ * off near that value (Powell, Vickery & Reinhold 2003, Nature 422).
+ */
+const CD_MAX = 2.5e-3;
+function dragCoefficient(U10) { return Math.min(CD_MAX, (0.8 + 0.065 * U10) * 1e-3); }
+
+/** Upper limit of the wind speeds the SMB growth curves were fitted to (m/s). */
+const SMB_FITTED_MAX_WIND = 40;
+
+/** Short form for tight spaces. */
+function windLabelShort(U10) {
+  if (U10 >= 113) return 'off the scale';
+  if (U10 >= 33) return `hurricane cat ${U10 >= 70 ? 5 : U10 >= 58 ? 4 : U10 >= 50 ? 3 : U10 >= 43 ? 2 : 1}`;
+  return `Bft ${beaufort(U10)}`;
+}
+
+/** A plain-language label for a 10 m wind speed. */
+function windLabel(U10) {
+  if (U10 >= 113) return 'beyond any wind measured on Earth';
+  if (U10 >= 70) return 'category 5 hurricane';
+  if (U10 >= 58) return 'category 4 hurricane';
+  if (U10 >= 50) return 'category 3 hurricane';
+  if (U10 >= 43) return 'category 2 hurricane';
+  if (U10 >= 33) return 'category 1 hurricane';
+  return `Beaufort ${beaufort(U10)}`;
+}
 
 /** Surface wind stress τ = ρ_air C_D U10² (Pa). */
 function windStress(U10) { return RHO_AIR * dragCoefficient(U10) * U10 * U10; }
@@ -573,32 +600,51 @@ function breakingLimitHs(d, Lp, kpd) {
 // ---------------------------------------------------------------------------
 
 /**
- * Equilibrium wind set-up: dη/dx = τ / (ρ g h), integrated along the basin
- * and shifted to conserve volume.  depths: array of still-water depths (m)
- * at spacing dx; tau: stress (Pa) positive toward +x.  Dean & Dalrymple §5.
+ * Equilibrium wind set-up along the basin: dη/dx = τ / (ρ g h) with
+ * h = d + η, integrated from the downwind shore toward the wind, with the
+ * downwind water level chosen (by bisection) so that the displaced volume
+ * Σ b·η·dx is zero.  Where the integration runs out of water the bed is dry
+ * (h = H_MIN) and stays dry further upwind.  For a tilt small compared with
+ * the depth this is the familiar linear result; for a hurricane over a
+ * shallow lake it gives the blown-dry upwind basin and the deep wedge of
+ * water against the downwind shore.  (Dean & Dalrymple §5; H_MIN = 0.5 m.)
+ *   depths: still-water depth (m) at n cells of size dx; tau: Pa, + toward +x
  */
-function equilibriumSetup(depths, dx, tau, iterations = 3, widths = null) {
+function equilibriumSetup(depths, dx, tau, widths = null, iterations = 60) {
   const n = depths.length;
+  const HMIN = 0.5;
   const eta = new Float64Array(n);
+  const slope = tau / (RHO_WATER * G);           // dη/dx · h
+  const down = tau >= 0 ? n - 1 : 0;             // downwind end index
+  const step = tau >= 0 ? -1 : 1;                // march upwind
+  const integrate = (etaEnd) => {
+    let vol = 0;
+    let h = Math.max(HMIN, depths[down] + etaEnd);
+    let dry = false;
+    for (let k = 0, j = down; k < n; k++, j += step) {
+      if (k > 0) {
+        const jPrev = j - step;
+        if (!dry) {
+          // h decreases going upwind by |slope|/h per metre, plus the bed change
+          const hNext = h - Math.abs(slope) * dx / h + (depths[j] - depths[jPrev]);
+          if (hNext <= HMIN) { dry = true; h = HMIN; } else h = hNext;
+        } else {
+          h = HMIN;
+        }
+      }
+      eta[j] = h - depths[j];
+      vol += (widths ? widths[j] : 1) * eta[j];
+    }
+    return vol;
+  };
+  // bisection on the downwind level: volume is monotone increasing in it
+  let lo = -Math.max(...depths);
+  let hi = Math.max(...depths) + Math.abs(slope) * n * dx / HMIN;
   for (let it = 0; it < iterations; it++) {
-    let acc = 0;
-    const next = new Float64Array(n);
-    for (let j = 1; j < n; j++) {
-      const h = Math.max(0.5, 0.5 * (depths[j] + depths[j - 1] + eta[j] + eta[j - 1]));
-      acc += (tau / (RHO_WATER * G * h)) * dx;
-      next[j] = acc;
-    }
-    // shift so that the displaced volume Σ b·η·dx is zero
-    let num = 0;
-    let den = 0;
-    for (let j = 0; j < n; j++) {
-      const b = widths ? widths[j] : 1;
-      num += b * next[j];
-      den += b;
-    }
-    const mean = num / den;
-    for (let j = 0; j < n; j++) eta[j] = next[j] - mean;
+    const mid = 0.5 * (lo + hi);
+    if (integrate(mid) > 0) hi = mid; else lo = mid;
   }
+  integrate(0.5 * (lo + hi));
   return eta;
 }
 
@@ -621,7 +667,7 @@ function meanDepth(depths) {
   return s / depths.length;
 }
 
-return { G, RHO_WATER, RHO_AIR, TWO_PI, wavenumber, groupFactor, phaseSpeed, groupSpeed, deepWavelength, wavelength, depthClass, shoalingCoefficient, stokes2Coefficient, ursell, orbitalSemiAxes, windStressFactor, dragCoefficient, windStress, beaufort, smbShallow, smbDeep, durationLimitedFetch, fetchGrowthTime, jonswapShape, tmaFactor, frequencyBins, GAMMA_SIG, STEEPNESS_LIMIT, breakingLimitHs, equilibriumSetup, seichePeriod, meanDepth };
+return { G, RHO_WATER, RHO_AIR, TWO_PI, wavenumber, groupFactor, phaseSpeed, groupSpeed, deepWavelength, wavelength, depthClass, shoalingCoefficient, stokes2Coefficient, ursell, orbitalSemiAxes, windStressFactor, CD_MAX, dragCoefficient, SMB_FITTED_MAX_WIND, windLabelShort, windLabel, windStress, beaufort, smbShallow, smbDeep, durationLimitedFetch, fetchGrowthTime, jonswapShape, tmaFactor, frequencyBins, GAMMA_SIG, STEEPNESS_LIMIT, breakingLimitHs, equilibriumSetup, seichePeriod, meanDepth };
 })();
 
 __m.bathymetry = (function () {
@@ -994,6 +1040,7 @@ const {
 
 const REGROW_LENGTH = 20e3;   // m, e-folding fetch for the sea to recover after breaking
 const DRY_DEPTH = 0.3;        // m
+const FILM_DEPTH = 1.0;       // m, water this thin is a blown-dry bed: no breaking marks
 const STOKES_CAP = 0.3;       // max second-harmonic / first-harmonic amplitude ratio
 const LUT_N = 256;
 const LUT_MIN = Math.log(0.05);
@@ -1001,7 +1048,7 @@ const LUT_MAX = Math.log(3000);
 const LUT_STEP = (LUT_MAX - LUT_MIN) / (LUT_N - 1);
 
 class WaveField {
-  constructor({ nComp = 64, fMin = 0.04, fMax = 0.8, seed = 12345 } = {}) {
+  constructor({ nComp = 72, fMin = 0.02, fMax = 0.8, seed = 12345 } = {}) {
     this.nComp = nComp;
     const { f, df } = frequencyBins(nComp, fMin, fMax);
     this.f = f;
@@ -1159,7 +1206,7 @@ class WaveField {
           const s = lim / hs;
           phiMem *= s;
           hs = lim;
-          brk = 1;
+          brk = dj > FILM_DEPTH ? 1 : 0;
         }
       }
       Hs[j] = hs;
@@ -1272,7 +1319,7 @@ class WaveField {
           const s = lim / hs;
           for (let i = 0; i < N; i++) w[i] *= s;
           hs = lim;
-          brk = 1;
+          brk = dj > FILM_DEPTH ? 1 : 0;
         }
       }
       Hs[p] = hs;
@@ -1281,9 +1328,11 @@ class WaveField {
         const idx = i * n + p;
         const ki = isWet ? this.kAt(i, pj) : 0;
         k[idx] = ki;
-        amp[idx] = w[i];
+        // a component shorter than ~2.5 samples cannot be drawn, only aliased: leave it out of the picture
+        const drawable = ki * dxf <= 2.5;
+        amp[idx] = drawable ? w[i] : 0;
         let a2 = 0;
-        if (opts.nonlinear && w[i] > 0 && isWet) {
+        if (opts.nonlinear && drawable && w[i] > 0 && isWet) {
           const ratio = Math.min(STOKES_CAP, ki * w[i] * this.c2At(i, pj));
           a2 = ratio * w[i];
         }
@@ -1373,14 +1422,16 @@ class WaveField {
    */
   particleDisplacement(p, z, t, blendW = 1) {
     const f = this.fine;
-    const { n, amp, ampPrev, Phi, k, d } = f;
+    const { n, amp, ampPrev, Phi, k, d, eta0, eta0Prev } = f;
     const N = this.nComp;
     const wB = Math.max(0, Math.min(1, blendW));
     const wA = 1 - wB;
     let dx = 0;
     let dz = 0;
     const depth = d[p];
-    const zz = Math.max(-depth, Math.min(0, z));
+    // z is measured from the still-water datum; the orbital profile wants the
+    // elevation below the local mean surface
+    const zz = Math.max(-depth, Math.min(0, z - (eta0Prev[p] * wA + eta0[p] * wB)));
     for (let i = 0; i < N; i++) {
       const idx = i * n + p;
       const a = ampPrev[idx] * wA + amp[idx] * wB;
@@ -1433,7 +1484,7 @@ __m.slowmodel = (function () {
 const { G, RHO_WATER } = __m.physics;
 
 const BOTTOM_DRAG = 0.0025;   // quadratic bottom-friction coefficient, typical for lakes
-const H_MIN = 0.5;                   // m, keeps shore cells from drying out
+const H_MIN = 0.5;            // m, the film left on a "dry" cell
 
 class SlowModel {
   /**
@@ -1478,11 +1529,24 @@ class SlowModel {
     this.sample();
   }
 
-  /** Advance by `dt` lake seconds under wind stress `tau` (Pa, + toward +x). */
+  /**
+   * Advance by `dt` lake seconds under wind stress `tau` (Pa, + toward +x).
+   * The sub-step honours the CFL condition on the *current* state: long-wave
+   * speed in the deepest water plus the fastest current, so a storm that
+   * piles water 100 m deep against one shore stays stable.
+   */
   step(dt, tau) {
-    const nSub = Math.max(1, Math.ceil(dt / this.dtMax));
-    const h = dt / nSub;
-    for (let s = 0; s < nSub; s++) this.substep(h, tau);
+    let remaining = dt;
+    while (remaining > 1e-9) {
+      let hmax = 0;
+      for (let j = 0; j < this.n; j++) hmax = Math.max(hmax, this.d[j] + this.eta[j]);
+      let umax = 0;
+      for (let f = 0; f < this.n - 1; f++) umax = Math.max(umax, Math.abs(this.u[f]));
+      const dtStable = (0.6 * this.dx) / (Math.sqrt(G * Math.max(H_MIN, hmax)) + umax);
+      const h = Math.min(remaining, dtStable);
+      this.substep(h, tau);
+      remaining -= h;
+    }
     this.time += dt;
     if (this.time - this.lastSample >= this.sampleEvery) this.sample();
   }
@@ -1490,24 +1554,34 @@ class SlowModel {
   substep(dt, tau) {
     const { n, dx, d, b, eta, u } = this;
     const g = G;
-    const inv = 1 / (RHO_WATER);
-    // momentum at faces
+    const inv = 1 / RHO_WATER;
+    const flux = this.flux || (this.flux = new Float64Array(n - 1));
+    // momentum at faces; a face with no water on it carries no flow
     for (let f = 0; f < n - 1; f++) {
-      const hf = Math.max(H_MIN, 0.5 * (d[f] + d[f + 1] + eta[f] + eta[f + 1]));
+      const hf = 0.5 * (d[f] + d[f + 1] + eta[f] + eta[f + 1]);
+      if (hf <= H_MIN * 1.001) { u[f] = 0; flux[f] = 0; continue; }
       const uf = u[f];
       const accel = -g * (eta[f + 1] - eta[f]) / dx + (tau * inv) / hf - (BOTTOM_DRAG * Math.abs(uf) * uf) / hf;
       u[f] = uf + dt * accel;
+      flux[f] = 0.5 * (b[f] + b[f + 1]) * hf * u[f];
+    }
+    // a cell may not give away more water than it has above the dry limit:
+    // scale its outgoing fluxes down together, which keeps the volume exact
+    for (let j = 0; j < n; j++) {
+      const out = (j < n - 1 && flux[j] > 0 ? flux[j] : 0) + (j > 0 && flux[j - 1] < 0 ? -flux[j - 1] : 0);
+      if (out <= 0) continue;
+      const available = Math.max(0, d[j] + eta[j] - H_MIN) * dx * b[j];
+      if (out * dt > available) {
+        const s = available / (out * dt);
+        if (j < n - 1 && flux[j] > 0) { flux[j] *= s; u[j] *= s; }
+        if (j > 0 && flux[j - 1] < 0) { flux[j - 1] *= s; u[j - 1] *= s; }
+      }
     }
     // continuity at centres, closed walls at both ends
-    let fluxLeft = 0;
     for (let j = 0; j < n; j++) {
-      let fluxRight = 0;
-      if (j < n - 1) {
-        const hf = Math.max(H_MIN, 0.5 * (d[j] + d[j + 1] + eta[j] + eta[j + 1]));
-        fluxRight = 0.5 * (b[j] + b[j + 1]) * hf * u[j];
-      }
+      const fluxRight = j < n - 1 ? flux[j] : 0;
+      const fluxLeft = j > 0 ? flux[j - 1] : 0;
       eta[j] -= (dt / (dx * b[j])) * (fluxRight - fluxLeft);
-      fluxLeft = fluxRight;
     }
   }
 
@@ -1530,7 +1604,7 @@ class SlowModel {
   }
 }
 
-return { BOTTOM_DRAG, SlowModel };
+return { BOTTOM_DRAG, H_MIN, SlowModel };
 })();
 
 __m.render = (function () {
@@ -1598,7 +1672,7 @@ function overviewGeometry(W, H, L, maxDepth) {
   };
 }
 
-const LEVEL_EXAG_STEPS = [1, 2, 5, 10, 20, 50, 100, 200, 500, 1000];
+const LEVEL_EXAG_STEPS = [0.05, 0.1, 0.2, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500, 1000];
 
 function drawOverview(ctx, W, H, v, pal) {
   const { L, coarse, depthAt, levelAt, win, dir, U10, ends, editing, points, maxDepth, hoverX } = v;
@@ -1700,9 +1774,9 @@ function drawOverview(ctx, W, H, v, pal) {
     etas[c] = levelAt ? levelAt(xm) : 0;
     etaMax = Math.max(etaMax, Math.abs(etas[c]));
   }
-  let E = 1;
+  let E = LEVEL_EXAG_STEPS[0];
   for (const e of LEVEL_EXAG_STEPS) if (etaMax * e * g.pxPerM <= 20) E = e;
-  for (let c = 0; c <= cols; c++) lvlY[c] = g.yWater - etas[c] * E * g.pxPerM;
+  for (let c = 0; c <= cols; c++) lvlY[c] = Math.max(g.chartBottom + 4, Math.min(bedY[c], g.yWater - etas[c] * E * g.pxPerM));
 
   // water
   const grad = ctx.createLinearGradient(0, g.yWater, 0, g.secBottom);
@@ -1802,7 +1876,7 @@ function drawOverview(ctx, W, H, v, pal) {
   ctx.textAlign = 'right';
   ctx.fillText(ends[1], W - g.padR - 4, g.secTop);
   // level exaggeration tag
-  if (levelAt && E > 1) {
+  if (levelAt && E !== 1) {
     ctx.font = `11px ${pal.mono}`;
     ctx.fillStyle = pal.muted;
     ctx.textAlign = 'center';
@@ -1884,17 +1958,37 @@ function drawOverview(ctx, W, H, v, pal) {
 // Zoom window
 // ---------------------------------------------------------------------------
 
-function zoomGeometry(W, H, width, exag) {
+/**
+ * Window scales.  The vertical scale is the horizontal one times the chosen
+ * exaggeration, reduced automatically when the sea is taller than the frame
+ * (crests reach about 1.3 Hs with the sharpened crests).
+ */
+function zoomGeometry(W, H, width, exag, hsMax = 0, zRef = 0) {
   const sx = W / width;
-  const sy = sx * exag;
-  const yWater = Math.round(H * 0.4);
-  return { sx, sy, yWater };
+  const yWater = Math.round(H * 0.4);          // pixel row of the local mean water level
+  let sy = sx * exag;
+  let auto = false;
+  if (hsMax > 0) {
+    const fit = (yWater - 46) / (1.3 * hsMax);
+    if (fit < sy) { sy = fit; auto = true; }
+  }
+  // z is measured from the still-water datum; the frame is centred on zRef,
+  // the mean level at the window (which wind set-up can move by metres)
+  const yOf = (z) => yWater - (z - zRef) * sy;
+  return { sx, sy, yWater, exagEff: sy / sx, auto, zRef, yOf };
+}
+
+function fmtExag(g) {
+  const e = g.exagEff;
+  const txt = e >= 1 ? (Math.abs(e - Math.round(e)) < 0.05 ? String(Math.round(e)) : e.toFixed(1)) : e.toFixed(2);
+  return `×${txt}${g.auto ? ' auto-fit' : ''}`;
 }
 
 function drawZoom(ctx, W, H, v, pal) {
   const { fine, eta, win, exag, particles, dir, U10, L, ends, opts, center } = v;
-  const g = zoomGeometry(W, H, win.width, exag);
   const n = fine.n;
+  const eta0c = fine.eta0[Math.floor(n / 2)];
+  const g = zoomGeometry(W, H, win.width, exag, v.hsMax, eta0c);
   const xPx = (p) => (p / (n - 1)) * W;
   ctx.clearRect(0, 0, W, H);
   ctx.fillStyle = pal.sky;
@@ -1904,9 +1998,9 @@ function drawZoom(ctx, W, H, v, pal) {
   const bedY = new Float64Array(n);
   let bedMin = Infinity;
   for (let p = 0; p < n; p++) {
-    surfY[p] = g.yWater - eta[p] * g.sy;
+    surfY[p] = g.yOf(eta[p]);
     const still = fine.d[p] - fine.eta0[p];
-    bedY[p] = g.yWater + still * g.sy;
+    bedY[p] = g.yOf(-still);
     bedMin = Math.min(bedMin, bedY[p]);
   }
 
@@ -1939,7 +2033,7 @@ function drawZoom(ctx, W, H, v, pal) {
   ctx.lineWidth = 2;
   ctx.stroke();
 
-  // still-water and local mean level
+  // local mean level (the frame's reference) and the still-water datum
   ctx.setLineDash([4, 4]);
   ctx.lineWidth = 1;
   ctx.strokeStyle = pal.muted;
@@ -1947,13 +2041,21 @@ function drawZoom(ctx, W, H, v, pal) {
   ctx.moveTo(0, g.yWater + 0.5);
   ctx.lineTo(W, g.yWater + 0.5);
   ctx.stroke();
-  const eta0c = fine.eta0[Math.floor(n / 2)];
-  if (opts.setup && Math.abs(eta0c * g.sy) > 2) {
+  const yStill = g.yOf(0);
+  if (opts.setup && Math.abs(yStill - g.yWater) > 2) {
     ctx.strokeStyle = pal.wind;
     ctx.beginPath();
-    ctx.moveTo(0, g.yWater - eta0c * g.sy + 0.5);
-    ctx.lineTo(W, g.yWater - eta0c * g.sy + 0.5);
+    ctx.moveTo(0, yStill + 0.5);
+    ctx.lineTo(W, yStill + 0.5);
     ctx.stroke();
+    if (yStill > 0 && yStill < H) {
+      ctx.setLineDash([]);
+      ctx.font = `11px ${pal.mono}`;
+      ctx.fillStyle = pal.wind;
+      ctx.textAlign = 'right';
+      ctx.textBaseline = yStill > g.yWater ? 'top' : 'bottom';
+      ctx.fillText(`still-water datum, ${eta0c >= 0 ? '' : '+'}${fmt(-eta0c, 1)} m from the surface here`, W - 14, yStill + (yStill > g.yWater ? 3 : -3));
+    }
   }
   ctx.setLineDash([]);
 
@@ -1965,7 +2067,7 @@ function drawZoom(ctx, W, H, v, pal) {
         for (let i = 0; i < pt.trail.length; i++) {
           const [tx, ty] = pt.trail[i];
           const px = tx * g.sx;
-          const py = g.yWater - ty * g.sy;
+          const py = g.yOf(ty);
           if (i === 0) ctx.moveTo(px, py); else ctx.lineTo(px, py);
         }
         ctx.strokeStyle = pal.foam;
@@ -1975,7 +2077,7 @@ function drawZoom(ctx, W, H, v, pal) {
         ctx.globalAlpha = 1;
       }
       ctx.beginPath();
-      ctx.arc(pt.cur[0] * g.sx, g.yWater - pt.cur[1] * g.sy, 2.5, 0, Math.PI * 2);
+      ctx.arc(pt.cur[0] * g.sx, g.yOf(pt.cur[1]), 2.5, 0, Math.PI * 2);
       ctx.fillStyle = pal.foam;
       ctx.fill();
     }
@@ -2021,7 +2123,7 @@ function drawZoom(ctx, W, H, v, pal) {
     ctx.moveTo(0, y + 0.5);
     ctx.lineTo(8, y + 0.5);
     ctx.stroke();
-    ctx.fillText(d === 0 ? '0 m' : `-${+d.toFixed(2)} m`, 11, y);
+    ctx.fillText(d === 0 ? '0 m, mean surface' : `-${+d.toFixed(2)} m`, 11, y);
   }
   const barM = niceStep(win.width / 4, 1);
   const barPx = barM * g.sx;
@@ -2034,7 +2136,7 @@ function drawZoom(ctx, W, H, v, pal) {
   ctx.textAlign = 'right';
   ctx.textBaseline = 'bottom';
   ctx.fillStyle = pal.fg;
-  ctx.fillText(`${+barM.toFixed(2)} m  ·  vertical ×${exag}`, W - 14, H - 18);
+  ctx.fillText(`${+barM.toFixed(2)} m  ·  vertical ${fmtExag(g)}`, W - 14, H - 18);
   if (bedMin > H) {
     const dc = fine.d[Math.floor(n / 2)];
     ctx.textAlign = 'center';
@@ -2107,7 +2209,7 @@ function drawVessel(ctx, W, H, g, v, pal, waterGrad, waterPath) {
     const X = hs * x;
     const Xr = X * cs - z * sn;
     const Zr = X * sn + z * cs;
-    return [(xc + Xr) * g.sx, g.yWater - (pose.heave + Zr) * g.sy];
+    return [(xc + Xr) * g.sx, g.yOf(pose.heave + Zr)];
   };
   const path = (pts) => {
     ctx.beginPath();
@@ -2328,7 +2430,7 @@ function drawGauges(ctx, W, H, v, pal) {
   ctx.fillText(`seiche T₁ ≈ ${fmt(seicheT / 3600, 1)} h`, padL + 6, padT);
 }
 
-return { readPalette, fitCanvas, niceStep, fmt, overviewGeometry, drawOverview, zoomGeometry, drawZoom, drawSpectrum, drawGauges };
+return { readPalette, fitCanvas, niceStep, fmt, overviewGeometry, drawOverview, zoomGeometry, fmtExag, drawZoom, drawSpectrum, drawGauges };
 })();
 
 __m.main = (function () {
@@ -2336,8 +2438,9 @@ __m.main = (function () {
 
 const {
   G, RHO_WATER, TWO_PI, wavenumber, wavelength, deepWavelength, groupFactor, depthClass, ursell,
-  windStressFactor, dragCoefficient, windStress, beaufort, smbShallow, smbDeep,
+  windStressFactor, dragCoefficient, windStress, beaufort, windLabel, windLabelShort, smbShallow, smbDeep,
   durationLimitedFetch, fetchGrowthTime, jonswapShape, equilibriumSetup, seichePeriod, GAMMA_SIG,
+  SMB_FITTED_MAX_WIND, CD_MAX,
 } = __m.physics;
 const { PRESETS, presetById, depthFunction, widthFunction, sampleDepths, cloneProfile, withLength } = __m.bathymetry;
 const { WaveField } = __m.wavefield;
@@ -2346,6 +2449,14 @@ const { VESSELS, vesselById, vesselPose, vesselShapes } = __m.vessel;
 const { readPalette, fitCanvas, drawOverview, drawZoom, drawSpectrum, drawGauges, overviewGeometry, zoomGeometry, fmt } = __m.render;
 
 const M_COARSE = 600;
+const WIND_MAX = 231.5;        // m/s = 450 kn: far beyond any real wind, kept for play
+const WIDTH_MIN = 100;         // m
+const WIDTH_MAX = 10000;       // m
+// the wind slider is quadratic so the everyday range keeps fine resolution
+const windFromSlider = (v) => Math.round(WIND_MAX * (v / 100) * (v / 100) * 10) / 10;
+const sliderFromWind = (U) => 100 * Math.sqrt(U / WIND_MAX);
+const widthFromSlider = (v) => Math.round((WIDTH_MIN * Math.pow(WIDTH_MAX / WIDTH_MIN, v / 100)) / 10) * 10;
+const sliderFromWidth = (w) => (100 * Math.log(w / WIDTH_MIN)) / Math.log(WIDTH_MAX / WIDTH_MIN);
 const N_SLOW = 200;
 const TAU_UP = 0.5 * 3600;     // lake seconds: how fast the sea responds to a rising wind
 const TAU_DOWN = 2 * 3600;     // lake seconds: how fast a sea decays when the wind drops
@@ -2422,7 +2533,7 @@ function buildModels({ keepWater }) {
     slow.setDepths(depths, widths);
   } else {
     slow = new SlowModel(depths, slowDx, widths);
-    slow.reset(state.opts.setup ? equilibriumSetup(slow.d, slowDx, windTau(), 3, slow.b) : null);
+    slow.reset(state.opts.setup ? equilibriumSetup(slow.d, slowDx, windTau(), slow.b) : null);
   }
   state.win.center = Math.max(state.win.width / 2, Math.min(L - state.win.width / 2, state.win.center));
   dirty = true;
@@ -2452,7 +2563,7 @@ function updateCompare() {
   let hsMax = 0;
   for (let j = 0; j < compare.coarse.M; j++) hsMax = Math.max(hsMax, compare.coarse.Hs[j]);
   compare.hsMax = hsMax;
-  const eq = equilibriumSetup(compare.d, compare.slowDx, windTau(), 3, compare.b);
+  const eq = equilibriumSetup(compare.d, compare.slowDx, windTau(), compare.b);
   compare.tiltEq = (eq[eq.length - 1] - eq[0]) * dir;
 }
 
@@ -2518,7 +2629,7 @@ function rebuildFine(nowS, blend) {
   fineInterval = fineAt < 0 ? REBUILD_S : Math.max(0.05, Math.min(1, nowS - fineAt));
   fineAt = nowS;
   pendingFine = false;
-  const key = `${x0}|${x1}|${n}|${state.exag}`;
+  const key = `${x0}|${x1}|${n}|${state.exag}|${Math.round(hsMaxOf(wf.fine) / 2)}|${Math.round(wf.fine.eta0[Math.floor(n / 2)] / 2)}`;
   if (key !== particleKey) { particleKey = key; buildParticles(); }
 }
 
@@ -2539,19 +2650,26 @@ function blendWeight(nowS) {
 
 const Z_LEVELS = [-0.75, -2, -4, -7, -11, -16, -23, -32, -45, -65, -90, -130, -180, -260];
 
+function hsMaxOf(f) {
+  let m = 0;
+  for (let p = 0; p < f.n; p++) if (f.Hs[p] > m) m = f.Hs[p];
+  return m;
+}
+
 function buildParticles() {
   particles = [];
   const f = wf.fine;
   if (!f) return;
   const H = zc.clientHeight || 300;
-  const g = zoomGeometry(zc.clientWidth || 800, H, state.win.width, state.exag);
+  const g = zoomGeometry(zc.clientWidth || 800, H, state.win.width, state.exag, hsMaxOf(f), f.eta0[Math.floor(f.n / 2)]);
   for (const frac of [0.1, 0.3, 0.5, 0.7, 0.9]) {
     const p = Math.round(frac * (f.n - 1));
     const d = f.d[p];
     if (d < 1) continue;
-    for (const z of Z_LEVELS) {
-      if (-z > 0.93 * d) break;
-      if (g.yWater - z * g.sy > H - 26) break;
+    for (const level of Z_LEVELS) {
+      if (-level > 0.93 * d) break;
+      const z = f.eta0[p] + level;              // below the local mean surface
+      if (g.yOf(z) > H - 26) break;
       particles.push({ p, z, xRest: frac * state.win.width, trail: [], cur: [frac * state.win.width, z], lastPush: -1 });
     }
   }
@@ -2619,8 +2737,9 @@ function setupControls() {
   });
 
   const wind = $('wind');
+  wind.value = String(sliderFromWind(state.U10));
   wind.addEventListener('input', () => {
-    state.U10 = +wind.value;
+    state.U10 = windFromSlider(+wind.value);
     if (state.lakeRate === 0) steadySea();
     refreshLabels();
     dirty = true;
@@ -2652,8 +2771,9 @@ function setupControls() {
   const pos = $('winPos');
   pos.addEventListener('input', () => { setWindowCenter((+pos.value / 1000) * L); });
   const wid = $('winWidth');
+  wid.value = String(sliderFromWidth(state.win.width));
   wid.addEventListener('input', () => {
-    state.win.width = Math.round(100 * Math.pow(30, +wid.value / 100) / 10) * 10;
+    state.win.width = widthFromSlider(+wid.value);
     setWindowCenter(state.win.center);
   });
   const vs = $('vessel');
@@ -2675,7 +2795,7 @@ function setupControls() {
     const el = $(id);
     el.addEventListener('change', () => {
       state.opts[key] = el.checked;
-      if (key === 'setup' && el.checked) slow.reset(equilibriumSetup(slow.d, slowDx, windTau(), 3, slow.b));
+      if (key === 'setup' && el.checked) slow.reset(equilibriumSetup(slow.d, slowDx, windTau(), slow.b));
       dirty = true;
       jump = true;
     });
@@ -2688,8 +2808,8 @@ function setupControls() {
 }
 
 function setWindowWidth(w) {
-  state.win.width = Math.round(Math.max(100, Math.min(3000, w)) / 10) * 10;
-  $('winWidth').value = String(Math.round((100 * Math.log(state.win.width / 100)) / Math.log(30)));
+  state.win.width = Math.round(Math.max(WIDTH_MIN, Math.min(WIDTH_MAX, w)) / 10) * 10;
+  $('winWidth').value = String(sliderFromWidth(state.win.width));
   setWindowCenter(state.win.center);
 }
 
@@ -2719,7 +2839,7 @@ function loadPreset(id) {
 function refreshLabels() {
   const p = state.profile;
   const U = state.U10;
-  $('windVal').textContent = `${fmt(U, 1)} m/s · ${fmt(U * 1.944, 0)} kn · Bft ${beaufort(U)}`;
+  $('windVal').textContent = `${fmt(U, 1)} m/s · ${fmt(U * 1.944, 0)} kn · ${windLabelShort(U)}`;
   $('dirWest').textContent = `◀ ${p.ends[0]}`;
   $('dirEast').textContent = `${p.ends[1]} ▶`;
   $('profileNote').textContent = `${p.stats}${state.edited ? ' · edited' : ''}. ${p.note}`;
@@ -2936,7 +3056,7 @@ function updateReadouts() {
   const c = wf.coarse;
   const s = windowCenterStats();
   const set = (id, text, hot = false) => { const el = readoutEls[id]; el.textContent = text; el.classList.toggle('hot', hot); };
-  set('u10', `${fmt(U, 1)} m/s · ${fmt(U * 1.944, 0)} kn · ${fmt(U * 2.237, 0)} mph`);
+  set('u10', `${fmt(U, 1)} m/s · ${fmt(U * 1.944, 0)} kn · ${fmt(U * 2.237, 0)} mph`, U > SMB_FITTED_MAX_WIND);
   set('ua', `${fmt(sea.UAeff, 1)} m/s (target ${fmt(windStressFactor(U), 1)})`);
   set('cd', `${(dragCoefficient(U) * 1e3).toFixed(2)} × 10⁻³`);
   set('tau', `${fmt(windStress(U), 3)} Pa`);
@@ -2971,7 +3091,7 @@ function updateReadouts() {
   set('seiche', `${fmt(seichePeriod(slow.d, slowDx) / 3600, 1)} h`);
   const tiltNow = (slow.eta[slow.n - 1] - slow.eta[0]) * state.dir;
   set('tilt', state.opts.setup ? `${fmt(tiltNow, 2)} m` : 'off');
-  const eq = equilibriumSetup(slow.d, slowDx, windTau(), 3, slow.b);
+  const eq = equilibriumSetup(slow.d, slowDx, windTau(), slow.b);
   set('tiltEq', `${fmt((eq[slow.n - 1] - eq[0]) * state.dir, 2)} m`);
   set('clock', clockText(state.lakeTime));
   $('clock').textContent = `lake clock ${clockText(state.lakeTime)}`;
@@ -3024,12 +3144,15 @@ function updateWhy() {
     const deep = smbDeep(sea.UAeff, Feff);
     const steepHere = here.Hs / wavelength(here.Tp, dEff);
     const steepDeep = deep.Hs / deepWavelength(deep.Tp);
-    let p1 = `A ${fmt(U, 0)} m/s wind (${fmt(U * 1.944, 0)} kn, Beaufort ${beaufort(U)}) blowing toward ${down} works on ${fmt(Feff / 1e3, 0)} km of water that averages ${fmt(dEff, 0)} m deep along the way. The growth curves give a sea of Hs ${fmt(here.Hs, 1)} m and Tp ${fmt(here.Tp, 1)} s at the ${down} end.`;
+    let p1 = `A ${fmt(U, 0)} m/s wind (${fmt(U * 1.944, 0)} kn, ${windLabel(U)}) blowing toward ${down} works on ${fmt(Feff / 1e3, 0)} km of water that averages ${fmt(dEff, 0)} m deep along the way. The growth curves give a sea of Hs ${fmt(here.Hs, 1)} m and Tp ${fmt(here.Tp, 1)} s at the ${down} end.`;
     if (sea.Fstate < L - 1) p1 += ` The wind has not blown long enough to use the whole ${fmt(L / 1e3, 0)} km fetch, so the sea is duration-limited and still growing on the lake clock.`;
     if (deep.Hs > here.Hs * 1.03) {
       p1 += ` Over deep water the same wind and fetch would raise ${fmt(deep.Hs, 1)} m waves of ${fmt(deep.Tp, 1)} s. The bed drains energy from the longest waves, so this sea is lower and shorter, and steeper: Hs/L is ${fmt(steepHere, 3)} here against ${fmt(steepDeep, 3)} in deep water. Short, steep waves are what make a shallow lake dangerous in a blow.`;
     } else {
       p1 += ` That is essentially the deep-water result: the water along the fetch is deep enough that the bed never limits growth.`;
+    }
+    if (U > SMB_FITTED_MAX_WIND) {
+      p1 += ` Above about ${SMB_FITTED_MAX_WIND} m/s the growth curves are extrapolated far beyond the storms they were fitted to, and the drag coefficient is held at its hurricane ceiling of ${(CD_MAX * 1e3).toFixed(1)} × 10⁻³: treat these numbers as play, not prediction.`;
     }
     paras.push(p1);
 
@@ -3065,7 +3188,7 @@ function updateWhy() {
     }
   }
   const tau = windStress(U);
-  const eq = equilibriumSetup(slow.d, slowDx, tau * dir, 3, slow.b);
+  const eq = equilibriumSetup(slow.d, slowDx, tau * dir, slow.b);
   const tiltEq = (eq[slow.n - 1] - eq[0]) * dir;
   const T1 = seichePeriod(slow.d, slowDx) / 3600;
   let meanD = 0;
@@ -3161,7 +3284,7 @@ function frame(now) {
     drawZoom(ctx, W, H, {
       fine: wf.fine, eta, win: state.win, exag: state.exag, particles, dir: state.dir, U10: state.U10,
       L, ends: state.profile.ends, opts: state.opts, center: state.win.center, Lp: s.Lp,
-      vessel: currentVessel(eta),
+      vessel: currentVessel(eta), hsMax: hsMaxOf(wf.fine),
     }, pal);
   }
   if (frameNo % 6 === 0) { renderSpectrum(); renderGauges(); }

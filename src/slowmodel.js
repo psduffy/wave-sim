@@ -16,7 +16,7 @@
 import { G, RHO_WATER } from './physics.js';
 
 export const BOTTOM_DRAG = 0.0025;   // quadratic bottom-friction coefficient, typical for lakes
-const H_MIN = 0.5;                   // m, keeps shore cells from drying out
+export const H_MIN = 0.5;            // m, the film left on a "dry" cell
 
 export class SlowModel {
   /**
@@ -61,11 +61,24 @@ export class SlowModel {
     this.sample();
   }
 
-  /** Advance by `dt` lake seconds under wind stress `tau` (Pa, + toward +x). */
+  /**
+   * Advance by `dt` lake seconds under wind stress `tau` (Pa, + toward +x).
+   * The sub-step honours the CFL condition on the *current* state: long-wave
+   * speed in the deepest water plus the fastest current, so a storm that
+   * piles water 100 m deep against one shore stays stable.
+   */
   step(dt, tau) {
-    const nSub = Math.max(1, Math.ceil(dt / this.dtMax));
-    const h = dt / nSub;
-    for (let s = 0; s < nSub; s++) this.substep(h, tau);
+    let remaining = dt;
+    while (remaining > 1e-9) {
+      let hmax = 0;
+      for (let j = 0; j < this.n; j++) hmax = Math.max(hmax, this.d[j] + this.eta[j]);
+      let umax = 0;
+      for (let f = 0; f < this.n - 1; f++) umax = Math.max(umax, Math.abs(this.u[f]));
+      const dtStable = (0.6 * this.dx) / (Math.sqrt(G * Math.max(H_MIN, hmax)) + umax);
+      const h = Math.min(remaining, dtStable);
+      this.substep(h, tau);
+      remaining -= h;
+    }
     this.time += dt;
     if (this.time - this.lastSample >= this.sampleEvery) this.sample();
   }
@@ -73,24 +86,34 @@ export class SlowModel {
   substep(dt, tau) {
     const { n, dx, d, b, eta, u } = this;
     const g = G;
-    const inv = 1 / (RHO_WATER);
-    // momentum at faces
+    const inv = 1 / RHO_WATER;
+    const flux = this.flux || (this.flux = new Float64Array(n - 1));
+    // momentum at faces; a face with no water on it carries no flow
     for (let f = 0; f < n - 1; f++) {
-      const hf = Math.max(H_MIN, 0.5 * (d[f] + d[f + 1] + eta[f] + eta[f + 1]));
+      const hf = 0.5 * (d[f] + d[f + 1] + eta[f] + eta[f + 1]);
+      if (hf <= H_MIN * 1.001) { u[f] = 0; flux[f] = 0; continue; }
       const uf = u[f];
       const accel = -g * (eta[f + 1] - eta[f]) / dx + (tau * inv) / hf - (BOTTOM_DRAG * Math.abs(uf) * uf) / hf;
       u[f] = uf + dt * accel;
+      flux[f] = 0.5 * (b[f] + b[f + 1]) * hf * u[f];
+    }
+    // a cell may not give away more water than it has above the dry limit:
+    // scale its outgoing fluxes down together, which keeps the volume exact
+    for (let j = 0; j < n; j++) {
+      const out = (j < n - 1 && flux[j] > 0 ? flux[j] : 0) + (j > 0 && flux[j - 1] < 0 ? -flux[j - 1] : 0);
+      if (out <= 0) continue;
+      const available = Math.max(0, d[j] + eta[j] - H_MIN) * dx * b[j];
+      if (out * dt > available) {
+        const s = available / (out * dt);
+        if (j < n - 1 && flux[j] > 0) { flux[j] *= s; u[j] *= s; }
+        if (j > 0 && flux[j - 1] < 0) { flux[j - 1] *= s; u[j - 1] *= s; }
+      }
     }
     // continuity at centres, closed walls at both ends
-    let fluxLeft = 0;
     for (let j = 0; j < n; j++) {
-      let fluxRight = 0;
-      if (j < n - 1) {
-        const hf = Math.max(H_MIN, 0.5 * (d[j] + d[j + 1] + eta[j] + eta[j + 1]));
-        fluxRight = 0.5 * (b[j] + b[j + 1]) * hf * u[j];
-      }
+      const fluxRight = j < n - 1 ? flux[j] : 0;
+      const fluxLeft = j > 0 ? flux[j - 1] : 0;
       eta[j] -= (dt / (dx * b[j])) * (fluxRight - fluxLeft);
-      fluxLeft = fluxRight;
     }
   }
 

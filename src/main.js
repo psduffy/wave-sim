@@ -2,8 +2,9 @@
 
 import {
   G, RHO_WATER, TWO_PI, wavenumber, wavelength, deepWavelength, groupFactor, depthClass, ursell,
-  windStressFactor, dragCoefficient, windStress, beaufort, smbShallow, smbDeep,
+  windStressFactor, dragCoefficient, windStress, beaufort, windLabel, windLabelShort, smbShallow, smbDeep,
   durationLimitedFetch, fetchGrowthTime, jonswapShape, equilibriumSetup, seichePeriod, GAMMA_SIG,
+  SMB_FITTED_MAX_WIND, CD_MAX,
 } from './physics.js';
 import { PRESETS, presetById, depthFunction, widthFunction, sampleDepths, cloneProfile, withLength } from './bathymetry.js';
 import { WaveField } from './wavefield.js';
@@ -12,6 +13,14 @@ import { VESSELS, vesselById, vesselPose, vesselShapes } from './vessel.js';
 import { readPalette, fitCanvas, drawOverview, drawZoom, drawSpectrum, drawGauges, overviewGeometry, zoomGeometry, fmt } from './render.js';
 
 const M_COARSE = 600;
+const WIND_MAX = 231.5;        // m/s = 450 kn: far beyond any real wind, kept for play
+const WIDTH_MIN = 100;         // m
+const WIDTH_MAX = 10000;       // m
+// the wind slider is quadratic so the everyday range keeps fine resolution
+const windFromSlider = (v) => Math.round(WIND_MAX * (v / 100) * (v / 100) * 10) / 10;
+const sliderFromWind = (U) => 100 * Math.sqrt(U / WIND_MAX);
+const widthFromSlider = (v) => Math.round((WIDTH_MIN * Math.pow(WIDTH_MAX / WIDTH_MIN, v / 100)) / 10) * 10;
+const sliderFromWidth = (w) => (100 * Math.log(w / WIDTH_MIN)) / Math.log(WIDTH_MAX / WIDTH_MIN);
 const N_SLOW = 200;
 const TAU_UP = 0.5 * 3600;     // lake seconds: how fast the sea responds to a rising wind
 const TAU_DOWN = 2 * 3600;     // lake seconds: how fast a sea decays when the wind drops
@@ -88,7 +97,7 @@ function buildModels({ keepWater }) {
     slow.setDepths(depths, widths);
   } else {
     slow = new SlowModel(depths, slowDx, widths);
-    slow.reset(state.opts.setup ? equilibriumSetup(slow.d, slowDx, windTau(), 3, slow.b) : null);
+    slow.reset(state.opts.setup ? equilibriumSetup(slow.d, slowDx, windTau(), slow.b) : null);
   }
   state.win.center = Math.max(state.win.width / 2, Math.min(L - state.win.width / 2, state.win.center));
   dirty = true;
@@ -118,7 +127,7 @@ function updateCompare() {
   let hsMax = 0;
   for (let j = 0; j < compare.coarse.M; j++) hsMax = Math.max(hsMax, compare.coarse.Hs[j]);
   compare.hsMax = hsMax;
-  const eq = equilibriumSetup(compare.d, compare.slowDx, windTau(), 3, compare.b);
+  const eq = equilibriumSetup(compare.d, compare.slowDx, windTau(), compare.b);
   compare.tiltEq = (eq[eq.length - 1] - eq[0]) * dir;
 }
 
@@ -184,7 +193,7 @@ function rebuildFine(nowS, blend) {
   fineInterval = fineAt < 0 ? REBUILD_S : Math.max(0.05, Math.min(1, nowS - fineAt));
   fineAt = nowS;
   pendingFine = false;
-  const key = `${x0}|${x1}|${n}|${state.exag}`;
+  const key = `${x0}|${x1}|${n}|${state.exag}|${Math.round(hsMaxOf(wf.fine) / 2)}|${Math.round(wf.fine.eta0[Math.floor(n / 2)] / 2)}`;
   if (key !== particleKey) { particleKey = key; buildParticles(); }
 }
 
@@ -205,19 +214,26 @@ function blendWeight(nowS) {
 
 const Z_LEVELS = [-0.75, -2, -4, -7, -11, -16, -23, -32, -45, -65, -90, -130, -180, -260];
 
+function hsMaxOf(f) {
+  let m = 0;
+  for (let p = 0; p < f.n; p++) if (f.Hs[p] > m) m = f.Hs[p];
+  return m;
+}
+
 function buildParticles() {
   particles = [];
   const f = wf.fine;
   if (!f) return;
   const H = zc.clientHeight || 300;
-  const g = zoomGeometry(zc.clientWidth || 800, H, state.win.width, state.exag);
+  const g = zoomGeometry(zc.clientWidth || 800, H, state.win.width, state.exag, hsMaxOf(f), f.eta0[Math.floor(f.n / 2)]);
   for (const frac of [0.1, 0.3, 0.5, 0.7, 0.9]) {
     const p = Math.round(frac * (f.n - 1));
     const d = f.d[p];
     if (d < 1) continue;
-    for (const z of Z_LEVELS) {
-      if (-z > 0.93 * d) break;
-      if (g.yWater - z * g.sy > H - 26) break;
+    for (const level of Z_LEVELS) {
+      if (-level > 0.93 * d) break;
+      const z = f.eta0[p] + level;              // below the local mean surface
+      if (g.yOf(z) > H - 26) break;
       particles.push({ p, z, xRest: frac * state.win.width, trail: [], cur: [frac * state.win.width, z], lastPush: -1 });
     }
   }
@@ -285,8 +301,9 @@ function setupControls() {
   });
 
   const wind = $('wind');
+  wind.value = String(sliderFromWind(state.U10));
   wind.addEventListener('input', () => {
-    state.U10 = +wind.value;
+    state.U10 = windFromSlider(+wind.value);
     if (state.lakeRate === 0) steadySea();
     refreshLabels();
     dirty = true;
@@ -318,8 +335,9 @@ function setupControls() {
   const pos = $('winPos');
   pos.addEventListener('input', () => { setWindowCenter((+pos.value / 1000) * L); });
   const wid = $('winWidth');
+  wid.value = String(sliderFromWidth(state.win.width));
   wid.addEventListener('input', () => {
-    state.win.width = Math.round(100 * Math.pow(30, +wid.value / 100) / 10) * 10;
+    state.win.width = widthFromSlider(+wid.value);
     setWindowCenter(state.win.center);
   });
   const vs = $('vessel');
@@ -341,7 +359,7 @@ function setupControls() {
     const el = $(id);
     el.addEventListener('change', () => {
       state.opts[key] = el.checked;
-      if (key === 'setup' && el.checked) slow.reset(equilibriumSetup(slow.d, slowDx, windTau(), 3, slow.b));
+      if (key === 'setup' && el.checked) slow.reset(equilibriumSetup(slow.d, slowDx, windTau(), slow.b));
       dirty = true;
       jump = true;
     });
@@ -354,8 +372,8 @@ function setupControls() {
 }
 
 function setWindowWidth(w) {
-  state.win.width = Math.round(Math.max(100, Math.min(3000, w)) / 10) * 10;
-  $('winWidth').value = String(Math.round((100 * Math.log(state.win.width / 100)) / Math.log(30)));
+  state.win.width = Math.round(Math.max(WIDTH_MIN, Math.min(WIDTH_MAX, w)) / 10) * 10;
+  $('winWidth').value = String(sliderFromWidth(state.win.width));
   setWindowCenter(state.win.center);
 }
 
@@ -385,7 +403,7 @@ function loadPreset(id) {
 function refreshLabels() {
   const p = state.profile;
   const U = state.U10;
-  $('windVal').textContent = `${fmt(U, 1)} m/s · ${fmt(U * 1.944, 0)} kn · Bft ${beaufort(U)}`;
+  $('windVal').textContent = `${fmt(U, 1)} m/s · ${fmt(U * 1.944, 0)} kn · ${windLabelShort(U)}`;
   $('dirWest').textContent = `◀ ${p.ends[0]}`;
   $('dirEast').textContent = `${p.ends[1]} ▶`;
   $('profileNote').textContent = `${p.stats}${state.edited ? ' · edited' : ''}. ${p.note}`;
@@ -602,7 +620,7 @@ function updateReadouts() {
   const c = wf.coarse;
   const s = windowCenterStats();
   const set = (id, text, hot = false) => { const el = readoutEls[id]; el.textContent = text; el.classList.toggle('hot', hot); };
-  set('u10', `${fmt(U, 1)} m/s · ${fmt(U * 1.944, 0)} kn · ${fmt(U * 2.237, 0)} mph`);
+  set('u10', `${fmt(U, 1)} m/s · ${fmt(U * 1.944, 0)} kn · ${fmt(U * 2.237, 0)} mph`, U > SMB_FITTED_MAX_WIND);
   set('ua', `${fmt(sea.UAeff, 1)} m/s (target ${fmt(windStressFactor(U), 1)})`);
   set('cd', `${(dragCoefficient(U) * 1e3).toFixed(2)} × 10⁻³`);
   set('tau', `${fmt(windStress(U), 3)} Pa`);
@@ -637,7 +655,7 @@ function updateReadouts() {
   set('seiche', `${fmt(seichePeriod(slow.d, slowDx) / 3600, 1)} h`);
   const tiltNow = (slow.eta[slow.n - 1] - slow.eta[0]) * state.dir;
   set('tilt', state.opts.setup ? `${fmt(tiltNow, 2)} m` : 'off');
-  const eq = equilibriumSetup(slow.d, slowDx, windTau(), 3, slow.b);
+  const eq = equilibriumSetup(slow.d, slowDx, windTau(), slow.b);
   set('tiltEq', `${fmt((eq[slow.n - 1] - eq[0]) * state.dir, 2)} m`);
   set('clock', clockText(state.lakeTime));
   $('clock').textContent = `lake clock ${clockText(state.lakeTime)}`;
@@ -690,12 +708,15 @@ function updateWhy() {
     const deep = smbDeep(sea.UAeff, Feff);
     const steepHere = here.Hs / wavelength(here.Tp, dEff);
     const steepDeep = deep.Hs / deepWavelength(deep.Tp);
-    let p1 = `A ${fmt(U, 0)} m/s wind (${fmt(U * 1.944, 0)} kn, Beaufort ${beaufort(U)}) blowing toward ${down} works on ${fmt(Feff / 1e3, 0)} km of water that averages ${fmt(dEff, 0)} m deep along the way. The growth curves give a sea of Hs ${fmt(here.Hs, 1)} m and Tp ${fmt(here.Tp, 1)} s at the ${down} end.`;
+    let p1 = `A ${fmt(U, 0)} m/s wind (${fmt(U * 1.944, 0)} kn, ${windLabel(U)}) blowing toward ${down} works on ${fmt(Feff / 1e3, 0)} km of water that averages ${fmt(dEff, 0)} m deep along the way. The growth curves give a sea of Hs ${fmt(here.Hs, 1)} m and Tp ${fmt(here.Tp, 1)} s at the ${down} end.`;
     if (sea.Fstate < L - 1) p1 += ` The wind has not blown long enough to use the whole ${fmt(L / 1e3, 0)} km fetch, so the sea is duration-limited and still growing on the lake clock.`;
     if (deep.Hs > here.Hs * 1.03) {
       p1 += ` Over deep water the same wind and fetch would raise ${fmt(deep.Hs, 1)} m waves of ${fmt(deep.Tp, 1)} s. The bed drains energy from the longest waves, so this sea is lower and shorter, and steeper: Hs/L is ${fmt(steepHere, 3)} here against ${fmt(steepDeep, 3)} in deep water. Short, steep waves are what make a shallow lake dangerous in a blow.`;
     } else {
       p1 += ` That is essentially the deep-water result: the water along the fetch is deep enough that the bed never limits growth.`;
+    }
+    if (U > SMB_FITTED_MAX_WIND) {
+      p1 += ` Above about ${SMB_FITTED_MAX_WIND} m/s the growth curves are extrapolated far beyond the storms they were fitted to, and the drag coefficient is held at its hurricane ceiling of ${(CD_MAX * 1e3).toFixed(1)} × 10⁻³: treat these numbers as play, not prediction.`;
     }
     paras.push(p1);
 
@@ -731,7 +752,7 @@ function updateWhy() {
     }
   }
   const tau = windStress(U);
-  const eq = equilibriumSetup(slow.d, slowDx, tau * dir, 3, slow.b);
+  const eq = equilibriumSetup(slow.d, slowDx, tau * dir, slow.b);
   const tiltEq = (eq[slow.n - 1] - eq[0]) * dir;
   const T1 = seichePeriod(slow.d, slowDx) / 3600;
   let meanD = 0;
@@ -827,7 +848,7 @@ function frame(now) {
     drawZoom(ctx, W, H, {
       fine: wf.fine, eta, win: state.win, exag: state.exag, particles, dir: state.dir, U10: state.U10,
       L, ends: state.profile.ends, opts: state.opts, center: state.win.center, Lp: s.Lp,
-      vessel: currentVessel(eta),
+      vessel: currentVessel(eta), hsMax: hsMaxOf(wf.fine),
     }, pal);
   }
   if (frameNo % 6 === 0) { renderSpectrum(); renderGauges(); }

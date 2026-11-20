@@ -51,6 +51,18 @@ No build step, no dependencies: plain HTML, CSS and JavaScript on a 2-D canvas.
 | `build.mjs` | Inlines the modules into `dist/wave-sim.html`. |
 | `test/` | Unit tests that pin the formulas to hand calculations and textbook limits. |
 
+### Extreme winds
+
+The wind slider runs to 450 kn (232 m/s) because it is fun. Above about
+40 m/s the SMB curves are extrapolated far beyond the storms they were fitted
+to, and the page says so. To keep the model honest and stable out there the
+drag coefficient is capped at 2.5 × 10⁻³ (its hurricane ceiling, Powell et
+al. 2003) and the lake model handles wetting and drying: a hurricane over
+Erie blows the western basin empty and stacks a 50 m wedge of water against
+Buffalo, with the equilibrium solver and the time-stepping model agreeing on
+the result. The window re-centres on the local mean water level so the sea
+stays in frame, and its vertical scale auto-fits when the waves outgrow it.
+
 ### Two clocks
 
 Wind waves have periods of seconds; set-up and seiches take hours. The window

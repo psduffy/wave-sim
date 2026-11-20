@@ -159,3 +159,31 @@ test('slow model with Erie widths: the narrow Buffalo end gains relative to a un
   for (let j = 0; j < N; j++) vol += widths[j] * shaped.eta[j];
   assert.ok(Math.abs(vol) < 1e-6 * widths.reduce((a, b) => a + b, 0), 'volume conserved');
 });
+
+test('slow model survives a 450 kn wind over Erie: stable, volume-conserving, west end dry', async () => {
+  const { H_MIN } = await import('../src/slowmodel.js');
+  const { widthFunction } = await import('../src/bathymetry.js');
+  const erie = presetById('erie');
+  const N = 200;
+  const dx = erie.length / N;
+  const dfn = depthFunction(erie);
+  const wfn = widthFunction(erie);
+  const depths = new Float64Array(N);
+  const widths = new Float64Array(N);
+  for (let j = 0; j < N; j++) { depths[j] = dfn((j + 0.5) * dx); widths[j] = wfn((j + 0.5) * dx); }
+  const model = new SlowModel(depths, dx, widths);
+  model.reset();
+  const tau = windStress(232);
+  let vol0 = 0;
+  for (let j = 0; j < N; j++) vol0 += widths[j] * (model.d[j] + model.eta[j]);
+  for (let t = 0; t < 48 * 3600; t += 600) model.step(600, tau);
+  let vol = 0;
+  for (let j = 0; j < N; j++) {
+    assert.ok(Number.isFinite(model.eta[j]), `finite level at ${j}`);
+    assert.ok(model.d[j] + model.eta[j] >= H_MIN - 1e-6, `water never below the bed at ${j}`);
+    vol += widths[j] * (model.d[j] + model.eta[j]);
+  }
+  assert.ok(Math.abs(vol - vol0) / vol0 < 1e-9, `volume conserved: ${vol} vs ${vol0}`);
+  assert.ok(model.d[0] + model.eta[0] < 1.0, `Toledo end blown dry: ${model.d[0] + model.eta[0]} m of water`);
+  assert.ok(model.eta[N - 1] > 10, `Buffalo end piled up: +${model.eta[N - 1]} m`);
+});

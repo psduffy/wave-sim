@@ -31,6 +31,7 @@ import {
 
 const REGROW_LENGTH = 20e3;   // m, e-folding fetch for the sea to recover after breaking
 const DRY_DEPTH = 0.3;        // m
+const FILM_DEPTH = 1.0;       // m, water this thin is a blown-dry bed: no breaking marks
 const STOKES_CAP = 0.3;       // max second-harmonic / first-harmonic amplitude ratio
 const LUT_N = 256;
 const LUT_MIN = Math.log(0.05);
@@ -38,7 +39,7 @@ const LUT_MAX = Math.log(3000);
 const LUT_STEP = (LUT_MAX - LUT_MIN) / (LUT_N - 1);
 
 export class WaveField {
-  constructor({ nComp = 64, fMin = 0.04, fMax = 0.8, seed = 12345 } = {}) {
+  constructor({ nComp = 72, fMin = 0.02, fMax = 0.8, seed = 12345 } = {}) {
     this.nComp = nComp;
     const { f, df } = frequencyBins(nComp, fMin, fMax);
     this.f = f;
@@ -196,7 +197,7 @@ export class WaveField {
           const s = lim / hs;
           phiMem *= s;
           hs = lim;
-          brk = 1;
+          brk = dj > FILM_DEPTH ? 1 : 0;
         }
       }
       Hs[j] = hs;
@@ -309,7 +310,7 @@ export class WaveField {
           const s = lim / hs;
           for (let i = 0; i < N; i++) w[i] *= s;
           hs = lim;
-          brk = 1;
+          brk = dj > FILM_DEPTH ? 1 : 0;
         }
       }
       Hs[p] = hs;
@@ -318,9 +319,11 @@ export class WaveField {
         const idx = i * n + p;
         const ki = isWet ? this.kAt(i, pj) : 0;
         k[idx] = ki;
-        amp[idx] = w[i];
+        // a component shorter than ~2.5 samples cannot be drawn, only aliased: leave it out of the picture
+        const drawable = ki * dxf <= 2.5;
+        amp[idx] = drawable ? w[i] : 0;
         let a2 = 0;
-        if (opts.nonlinear && w[i] > 0 && isWet) {
+        if (opts.nonlinear && drawable && w[i] > 0 && isWet) {
           const ratio = Math.min(STOKES_CAP, ki * w[i] * this.c2At(i, pj));
           a2 = ratio * w[i];
         }
@@ -410,14 +413,16 @@ export class WaveField {
    */
   particleDisplacement(p, z, t, blendW = 1) {
     const f = this.fine;
-    const { n, amp, ampPrev, Phi, k, d } = f;
+    const { n, amp, ampPrev, Phi, k, d, eta0, eta0Prev } = f;
     const N = this.nComp;
     const wB = Math.max(0, Math.min(1, blendW));
     const wA = 1 - wB;
     let dx = 0;
     let dz = 0;
     const depth = d[p];
-    const zz = Math.max(-depth, Math.min(0, z));
+    // z is measured from the still-water datum; the orbital profile wants the
+    // elevation below the local mean surface
+    const zz = Math.max(-depth, Math.min(0, z - (eta0Prev[p] * wA + eta0[p] * wB)));
     for (let i = 0; i < N; i++) {
       const idx = i * n + p;
       const a = ampPrev[idx] * wA + amp[idx] * wB;

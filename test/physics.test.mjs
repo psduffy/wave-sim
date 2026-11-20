@@ -113,3 +113,27 @@ test('depth classes', () => {
   assert.equal(depthClass(TWO_PI * 0.2), 'intermediate');
   assert.equal(depthClass(TWO_PI * 0.01), 'shallow');
 });
+
+test('drag coefficient follows Wu then saturates at the hurricane value', async () => {
+  const { dragCoefficient, CD_MAX } = await import('../src/physics.js');
+  close(dragCoefficient(15), 1.775e-3, 1e-9, 'Wu at 15 m/s');
+  assert.equal(dragCoefficient(100), CD_MAX);
+  assert.equal(dragCoefficient(232), CD_MAX);
+});
+
+test('equilibrium set-up with a hurricane dries the upwind basin and conserves volume', () => {
+  const L = 388e3, n = 200, dx = L / n;
+  // Erie-like: shallow west, deep east
+  const depths = Float64Array.from({ length: n }, (_, j) => (j < 100 ? 9 : 24 + 40 * Math.exp(-((j - 170) ** 2) / 300)));
+  const tau = windStress(232);
+  const eta = equilibriumSetup(depths, dx, tau);
+  let vol = 0, dry = 0;
+  for (let j = 0; j < n; j++) {
+    vol += eta[j];
+    assert.ok(depths[j] + eta[j] >= 0.5 - 1e-9, `no water below the bed at ${j}`);
+    if (depths[j] + eta[j] <= 0.5 + 1e-6) dry++;
+  }
+  assert.ok(Math.abs(vol) < 1e-6 * n, `volume ${vol}`);
+  assert.ok(dry > 50, `upwind basin blown dry: ${dry} dry cells`);
+  assert.ok(eta[n - 1] > 20 && eta[n - 1] < 200, `deep wedge at the downwind shore: ${eta[n - 1]} m`);
+});

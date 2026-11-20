@@ -116,8 +116,34 @@ export function orbitalSemiAxes(a, k, d, z) {
 /** Wind-stress factor U_A = 0.71 U10^1.23 (U10 in m/s).  [SPM eq. 3-28a] */
 export function windStressFactor(U10) { return U10 > 0 ? 0.71 * Math.pow(U10, 1.23) : 0; }
 
-/** Drag coefficient C_D = (0.8 + 0.065 U10)·10⁻³.  [WU] */
-export function dragCoefficient(U10) { return (0.8 + 0.065 * U10) * 1e-3; }
+/**
+ * Drag coefficient C_D = (0.8 + 0.065 U10)·10⁻³ [WU], capped at 2.5·10⁻³:
+ * in hurricane winds the sea surface stops getting rougher and C_D levels
+ * off near that value (Powell, Vickery & Reinhold 2003, Nature 422).
+ */
+export const CD_MAX = 2.5e-3;
+export function dragCoefficient(U10) { return Math.min(CD_MAX, (0.8 + 0.065 * U10) * 1e-3); }
+
+/** Upper limit of the wind speeds the SMB growth curves were fitted to (m/s). */
+export const SMB_FITTED_MAX_WIND = 40;
+
+/** Short form for tight spaces. */
+export function windLabelShort(U10) {
+  if (U10 >= 113) return 'off the scale';
+  if (U10 >= 33) return `hurricane cat ${U10 >= 70 ? 5 : U10 >= 58 ? 4 : U10 >= 50 ? 3 : U10 >= 43 ? 2 : 1}`;
+  return `Bft ${beaufort(U10)}`;
+}
+
+/** A plain-language label for a 10 m wind speed. */
+export function windLabel(U10) {
+  if (U10 >= 113) return 'beyond any wind measured on Earth';
+  if (U10 >= 70) return 'category 5 hurricane';
+  if (U10 >= 58) return 'category 4 hurricane';
+  if (U10 >= 50) return 'category 3 hurricane';
+  if (U10 >= 43) return 'category 2 hurricane';
+  if (U10 >= 33) return 'category 1 hurricane';
+  return `Beaufort ${beaufort(U10)}`;
+}
 
 /** Surface wind stress τ = ρ_air C_D U10² (Pa). */
 export function windStress(U10) { return RHO_AIR * dragCoefficient(U10) * U10 * U10; }
@@ -225,32 +251,51 @@ export function breakingLimitHs(d, Lp, kpd) {
 // ---------------------------------------------------------------------------
 
 /**
- * Equilibrium wind set-up: dη/dx = τ / (ρ g h), integrated along the basin
- * and shifted to conserve volume.  depths: array of still-water depths (m)
- * at spacing dx; tau: stress (Pa) positive toward +x.  Dean & Dalrymple §5.
+ * Equilibrium wind set-up along the basin: dη/dx = τ / (ρ g h) with
+ * h = d + η, integrated from the downwind shore toward the wind, with the
+ * downwind water level chosen (by bisection) so that the displaced volume
+ * Σ b·η·dx is zero.  Where the integration runs out of water the bed is dry
+ * (h = H_MIN) and stays dry further upwind.  For a tilt small compared with
+ * the depth this is the familiar linear result; for a hurricane over a
+ * shallow lake it gives the blown-dry upwind basin and the deep wedge of
+ * water against the downwind shore.  (Dean & Dalrymple §5; H_MIN = 0.5 m.)
+ *   depths: still-water depth (m) at n cells of size dx; tau: Pa, + toward +x
  */
-export function equilibriumSetup(depths, dx, tau, iterations = 3, widths = null) {
+export function equilibriumSetup(depths, dx, tau, widths = null, iterations = 60) {
   const n = depths.length;
+  const HMIN = 0.5;
   const eta = new Float64Array(n);
+  const slope = tau / (RHO_WATER * G);           // dη/dx · h
+  const down = tau >= 0 ? n - 1 : 0;             // downwind end index
+  const step = tau >= 0 ? -1 : 1;                // march upwind
+  const integrate = (etaEnd) => {
+    let vol = 0;
+    let h = Math.max(HMIN, depths[down] + etaEnd);
+    let dry = false;
+    for (let k = 0, j = down; k < n; k++, j += step) {
+      if (k > 0) {
+        const jPrev = j - step;
+        if (!dry) {
+          // h decreases going upwind by |slope|/h per metre, plus the bed change
+          const hNext = h - Math.abs(slope) * dx / h + (depths[j] - depths[jPrev]);
+          if (hNext <= HMIN) { dry = true; h = HMIN; } else h = hNext;
+        } else {
+          h = HMIN;
+        }
+      }
+      eta[j] = h - depths[j];
+      vol += (widths ? widths[j] : 1) * eta[j];
+    }
+    return vol;
+  };
+  // bisection on the downwind level: volume is monotone increasing in it
+  let lo = -Math.max(...depths);
+  let hi = Math.max(...depths) + Math.abs(slope) * n * dx / HMIN;
   for (let it = 0; it < iterations; it++) {
-    let acc = 0;
-    const next = new Float64Array(n);
-    for (let j = 1; j < n; j++) {
-      const h = Math.max(0.5, 0.5 * (depths[j] + depths[j - 1] + eta[j] + eta[j - 1]));
-      acc += (tau / (RHO_WATER * G * h)) * dx;
-      next[j] = acc;
-    }
-    // shift so that the displaced volume Σ b·η·dx is zero
-    let num = 0;
-    let den = 0;
-    for (let j = 0; j < n; j++) {
-      const b = widths ? widths[j] : 1;
-      num += b * next[j];
-      den += b;
-    }
-    const mean = num / den;
-    for (let j = 0; j < n; j++) eta[j] = next[j] - mean;
+    const mid = 0.5 * (lo + hi);
+    if (integrate(mid) > 0) hi = mid; else lo = mid;
   }
+  integrate(0.5 * (lo + hi));
   return eta;
 }
 

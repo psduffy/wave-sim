@@ -62,7 +62,7 @@ export function overviewGeometry(W, H, L, maxDepth) {
   };
 }
 
-const LEVEL_EXAG_STEPS = [1, 2, 5, 10, 20, 50, 100, 200, 500, 1000];
+const LEVEL_EXAG_STEPS = [0.05, 0.1, 0.2, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500, 1000];
 
 export function drawOverview(ctx, W, H, v, pal) {
   const { L, coarse, depthAt, levelAt, win, dir, U10, ends, editing, points, maxDepth, hoverX } = v;
@@ -164,9 +164,9 @@ export function drawOverview(ctx, W, H, v, pal) {
     etas[c] = levelAt ? levelAt(xm) : 0;
     etaMax = Math.max(etaMax, Math.abs(etas[c]));
   }
-  let E = 1;
+  let E = LEVEL_EXAG_STEPS[0];
   for (const e of LEVEL_EXAG_STEPS) if (etaMax * e * g.pxPerM <= 20) E = e;
-  for (let c = 0; c <= cols; c++) lvlY[c] = g.yWater - etas[c] * E * g.pxPerM;
+  for (let c = 0; c <= cols; c++) lvlY[c] = Math.max(g.chartBottom + 4, Math.min(bedY[c], g.yWater - etas[c] * E * g.pxPerM));
 
   // water
   const grad = ctx.createLinearGradient(0, g.yWater, 0, g.secBottom);
@@ -266,7 +266,7 @@ export function drawOverview(ctx, W, H, v, pal) {
   ctx.textAlign = 'right';
   ctx.fillText(ends[1], W - g.padR - 4, g.secTop);
   // level exaggeration tag
-  if (levelAt && E > 1) {
+  if (levelAt && E !== 1) {
     ctx.font = `11px ${pal.mono}`;
     ctx.fillStyle = pal.muted;
     ctx.textAlign = 'center';
@@ -348,17 +348,37 @@ export function drawOverview(ctx, W, H, v, pal) {
 // Zoom window
 // ---------------------------------------------------------------------------
 
-export function zoomGeometry(W, H, width, exag) {
+/**
+ * Window scales.  The vertical scale is the horizontal one times the chosen
+ * exaggeration, reduced automatically when the sea is taller than the frame
+ * (crests reach about 1.3 Hs with the sharpened crests).
+ */
+export function zoomGeometry(W, H, width, exag, hsMax = 0, zRef = 0) {
   const sx = W / width;
-  const sy = sx * exag;
-  const yWater = Math.round(H * 0.4);
-  return { sx, sy, yWater };
+  const yWater = Math.round(H * 0.4);          // pixel row of the local mean water level
+  let sy = sx * exag;
+  let auto = false;
+  if (hsMax > 0) {
+    const fit = (yWater - 46) / (1.3 * hsMax);
+    if (fit < sy) { sy = fit; auto = true; }
+  }
+  // z is measured from the still-water datum; the frame is centred on zRef,
+  // the mean level at the window (which wind set-up can move by metres)
+  const yOf = (z) => yWater - (z - zRef) * sy;
+  return { sx, sy, yWater, exagEff: sy / sx, auto, zRef, yOf };
+}
+
+export function fmtExag(g) {
+  const e = g.exagEff;
+  const txt = e >= 1 ? (Math.abs(e - Math.round(e)) < 0.05 ? String(Math.round(e)) : e.toFixed(1)) : e.toFixed(2);
+  return `×${txt}${g.auto ? ' auto-fit' : ''}`;
 }
 
 export function drawZoom(ctx, W, H, v, pal) {
   const { fine, eta, win, exag, particles, dir, U10, L, ends, opts, center } = v;
-  const g = zoomGeometry(W, H, win.width, exag);
   const n = fine.n;
+  const eta0c = fine.eta0[Math.floor(n / 2)];
+  const g = zoomGeometry(W, H, win.width, exag, v.hsMax, eta0c);
   const xPx = (p) => (p / (n - 1)) * W;
   ctx.clearRect(0, 0, W, H);
   ctx.fillStyle = pal.sky;
@@ -368,9 +388,9 @@ export function drawZoom(ctx, W, H, v, pal) {
   const bedY = new Float64Array(n);
   let bedMin = Infinity;
   for (let p = 0; p < n; p++) {
-    surfY[p] = g.yWater - eta[p] * g.sy;
+    surfY[p] = g.yOf(eta[p]);
     const still = fine.d[p] - fine.eta0[p];
-    bedY[p] = g.yWater + still * g.sy;
+    bedY[p] = g.yOf(-still);
     bedMin = Math.min(bedMin, bedY[p]);
   }
 
@@ -403,7 +423,7 @@ export function drawZoom(ctx, W, H, v, pal) {
   ctx.lineWidth = 2;
   ctx.stroke();
 
-  // still-water and local mean level
+  // local mean level (the frame's reference) and the still-water datum
   ctx.setLineDash([4, 4]);
   ctx.lineWidth = 1;
   ctx.strokeStyle = pal.muted;
@@ -411,13 +431,21 @@ export function drawZoom(ctx, W, H, v, pal) {
   ctx.moveTo(0, g.yWater + 0.5);
   ctx.lineTo(W, g.yWater + 0.5);
   ctx.stroke();
-  const eta0c = fine.eta0[Math.floor(n / 2)];
-  if (opts.setup && Math.abs(eta0c * g.sy) > 2) {
+  const yStill = g.yOf(0);
+  if (opts.setup && Math.abs(yStill - g.yWater) > 2) {
     ctx.strokeStyle = pal.wind;
     ctx.beginPath();
-    ctx.moveTo(0, g.yWater - eta0c * g.sy + 0.5);
-    ctx.lineTo(W, g.yWater - eta0c * g.sy + 0.5);
+    ctx.moveTo(0, yStill + 0.5);
+    ctx.lineTo(W, yStill + 0.5);
     ctx.stroke();
+    if (yStill > 0 && yStill < H) {
+      ctx.setLineDash([]);
+      ctx.font = `11px ${pal.mono}`;
+      ctx.fillStyle = pal.wind;
+      ctx.textAlign = 'right';
+      ctx.textBaseline = yStill > g.yWater ? 'top' : 'bottom';
+      ctx.fillText(`still-water datum, ${eta0c >= 0 ? '' : '+'}${fmt(-eta0c, 1)} m from the surface here`, W - 14, yStill + (yStill > g.yWater ? 3 : -3));
+    }
   }
   ctx.setLineDash([]);
 
@@ -429,7 +457,7 @@ export function drawZoom(ctx, W, H, v, pal) {
         for (let i = 0; i < pt.trail.length; i++) {
           const [tx, ty] = pt.trail[i];
           const px = tx * g.sx;
-          const py = g.yWater - ty * g.sy;
+          const py = g.yOf(ty);
           if (i === 0) ctx.moveTo(px, py); else ctx.lineTo(px, py);
         }
         ctx.strokeStyle = pal.foam;
@@ -439,7 +467,7 @@ export function drawZoom(ctx, W, H, v, pal) {
         ctx.globalAlpha = 1;
       }
       ctx.beginPath();
-      ctx.arc(pt.cur[0] * g.sx, g.yWater - pt.cur[1] * g.sy, 2.5, 0, Math.PI * 2);
+      ctx.arc(pt.cur[0] * g.sx, g.yOf(pt.cur[1]), 2.5, 0, Math.PI * 2);
       ctx.fillStyle = pal.foam;
       ctx.fill();
     }
@@ -485,7 +513,7 @@ export function drawZoom(ctx, W, H, v, pal) {
     ctx.moveTo(0, y + 0.5);
     ctx.lineTo(8, y + 0.5);
     ctx.stroke();
-    ctx.fillText(d === 0 ? '0 m' : `-${+d.toFixed(2)} m`, 11, y);
+    ctx.fillText(d === 0 ? '0 m, mean surface' : `-${+d.toFixed(2)} m`, 11, y);
   }
   const barM = niceStep(win.width / 4, 1);
   const barPx = barM * g.sx;
@@ -498,7 +526,7 @@ export function drawZoom(ctx, W, H, v, pal) {
   ctx.textAlign = 'right';
   ctx.textBaseline = 'bottom';
   ctx.fillStyle = pal.fg;
-  ctx.fillText(`${+barM.toFixed(2)} m  ·  vertical ×${exag}`, W - 14, H - 18);
+  ctx.fillText(`${+barM.toFixed(2)} m  ·  vertical ${fmtExag(g)}`, W - 14, H - 18);
   if (bedMin > H) {
     const dc = fine.d[Math.floor(n / 2)];
     ctx.textAlign = 'center';
@@ -571,7 +599,7 @@ function drawVessel(ctx, W, H, g, v, pal, waterGrad, waterPath) {
     const X = hs * x;
     const Xr = X * cs - z * sn;
     const Zr = X * sn + z * cs;
-    return [(xc + Xr) * g.sx, g.yWater - (pose.heave + Zr) * g.sy];
+    return [(xc + Xr) * g.sx, g.yOf(pose.heave + Zr)];
   };
   const path = (pts) => {
     ctx.beginPath();
