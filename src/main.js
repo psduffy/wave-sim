@@ -177,7 +177,7 @@ function rebuildCoarse(nowS) {
 
 function rebuildFine(nowS, blend) {
   const { opts, win } = state;
-  const n = Math.max(200, Math.min(1400, Math.round(zc.clientWidth || 800)));
+  const n = Math.max(200, Math.min(2400, Math.round(zc.clientWidth || 800)));
   const x0 = win.center - win.width / 2;
   const x1 = win.center + win.width / 2;
   wf.computeFine(x0, x1, n, depthAt, opts.setup ? (x) => slow.levelAt(x) : null, opts, blend);
@@ -321,7 +321,6 @@ function setupControls() {
   wid.addEventListener('input', () => {
     state.win.width = Math.round(100 * Math.pow(30, +wid.value / 100) / 10) * 10;
     setWindowCenter(state.win.center);
-    refreshLabels();
   });
   const vs = $('vessel');
   for (const v of VESSELS) {
@@ -352,6 +351,12 @@ function setupControls() {
   bind('optNonlinear', 'nonlinear');
   bind('optSetup', 'setup');
   bind('optOrbits', 'orbits');
+}
+
+function setWindowWidth(w) {
+  state.win.width = Math.round(Math.max(100, Math.min(3000, w)) / 10) * 10;
+  $('winWidth').value = String(Math.round((100 * Math.log(state.win.width / 100)) / Math.log(30)));
+  setWindowCenter(state.win.center);
 }
 
 function setWindowCenter(x) {
@@ -391,6 +396,70 @@ function refreshLabels() {
   $('legEast').textContent = p.ends[1];
   $('jumpUp').textContent = `${state.dir > 0 ? p.ends[0] : p.ends[1]} (upwind)`;
   $('jumpDown').textContent = `${state.dir > 0 ? p.ends[1] : p.ends[0]} (downwind)`;
+}
+
+// ---------------------------------------------------------------------------
+// Expand a panel: real fullscreen where the browser allows it, otherwise an
+// in-page overlay that fills the viewport.  Escape or the button closes it.
+// ---------------------------------------------------------------------------
+
+let maxPanel = null;
+
+function setupExpand() {
+  for (const btn of document.querySelectorAll('[data-expand]')) {
+    const panel = btn.closest('.panel');
+    btn.addEventListener('click', () => (maxPanel === panel ? unmaximize() : maximize(panel)));
+  }
+  document.addEventListener('fullscreenchange', () => {
+    if (!document.fullscreenElement && maxPanel && maxPanel.dataset.fs === '1') unmaximize();
+  });
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape' && maxPanel) { unmaximize(); return; }
+    const tag = e.target && e.target.tagName;
+    if (tag === 'INPUT' || tag === 'SELECT' || tag === 'TEXTAREA') return;
+    const big = e.shiftKey;
+    if (e.key === 'ArrowLeft' || e.key === 'ArrowRight') {
+      const step = big ? 1000 : state.win.width * 0.25;
+      setWindowCenter(state.win.center + (e.key === 'ArrowRight' ? step : -step));
+      e.preventDefault();
+    } else if (e.key === 'ArrowUp' || e.key === 'ArrowDown') {
+      const factor = big ? 2 : 1.25;
+      setWindowWidth(e.key === 'ArrowUp' ? state.win.width / factor : state.win.width * factor);
+      e.preventDefault();
+    }
+  });
+}
+
+function setExpandLabels() {
+  for (const btn of document.querySelectorAll('[data-expand]')) {
+    const on = btn.closest('.panel') === maxPanel;
+    btn.textContent = on ? 'Close (Esc)' : 'Expand';
+    btn.setAttribute('aria-pressed', String(on));
+  }
+}
+
+function maximize(panel) {
+  if (maxPanel) unmaximize();
+  maxPanel = panel;
+  panel.classList.add('maximized');
+  document.body.classList.add('has-max');
+  setExpandLabels();
+  if (panel.requestFullscreen) {
+    panel.requestFullscreen().then(() => { panel.dataset.fs = '1'; }).catch(() => { /* overlay fallback is already in place */ });
+  }
+  dirty = true;
+}
+
+function unmaximize() {
+  const panel = maxPanel;
+  if (!panel) return;
+  maxPanel = null;
+  panel.classList.remove('maximized');
+  document.body.classList.remove('has-max');
+  delete panel.dataset.fs;
+  if (document.fullscreenElement === panel && document.exitFullscreen) document.exitFullscreen().catch(() => {});
+  setExpandLabels();
+  dirty = true;
 }
 
 // ---------------------------------------------------------------------------
@@ -776,6 +845,7 @@ function boot() {
   buildReadouts();
   loadPreset(state.presetId);
   setupOverviewInteraction();
+  setupExpand();
   const mq = window.matchMedia('(prefers-color-scheme: dark)');
   const refreshPal = () => { pal = readPalette(); };
   if (mq.addEventListener) mq.addEventListener('change', refreshPal);
